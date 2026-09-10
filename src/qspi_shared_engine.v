@@ -1,6 +1,6 @@
 // qspi_shared_engine.v -- minimal single-line SPI master shared between
-// external flash (CS0), PSRAM "RAM A" (CS1), and PSRAM "RAM B" (CS2) on
-// the Tiny Tapeout QSPI Pmod.
+// external flash (CS0), PSRAM "RAM A" (CS1), PSRAM "RAM B" (CS2), and a
+// generic SPI peripheral (also CS2) on the Tiny Tapeout QSPI Pmod.
 //
 // RAM B uses the exact same 0x03/0x02 command protocol as RAM A -- on
 // the stock QSPI Pmod board, CS2 is already wired directly to a second,
@@ -10,6 +10,26 @@
 // is needed here at all -- RAM B is reachable out of the box, with the
 // same read/write command set RAM A already uses. mem.v picks which of
 // RAM A/RAM B backs its one external PSRAM window via req_dev.
+//
+// GENERIC SPI PERIPHERAL, ALSO ON CS2: ported from AgilA8's third SPI
+// front-end (its own spi_ctrl.v / qspi_shared_engine.v CS2 owner) --
+// req_dev==2'd0 (previously unused/reserved), a raw 8-bit byte shifted
+// out MOSI-first with no command/address framing at all, unlike flash/
+// PSRAM/RAM B's fixed 0x02/0x03 protocol. This is the SAME physical
+// CS2 pin RAM B uses, not a separate one -- there is no spare CS-
+// capable pin on the stock QSPI Pmod (confirmed against the board's
+// own schematic docs: uio[4]/uio[5] (SD2/SD3) are the flash chip's
+// WP/HOLD lines, not general-purpose pins; the only way to free a CS
+// line is the board's own documented per-chip trace-cut, same
+// mechanism AgilA8's CS2 already depends on). So CS2 here is
+// mutually exclusive between RAM B and this generic peripheral at the
+// BOARD level, decided by which physical device is actually wired
+// there (the stock RAM B chip, unmodified; or an external device,
+// after cutting RAM B's trace) -- not something this RTL arbitrates,
+// exactly like AgilA8's own CS2 was always board-modification-gated.
+// A program should only ever use PSRAM_BANK=1 (RAM B) or the generic
+// peripheral (SPI_DATA, mem.v's 0xFD), never both, depending on what's
+// actually populated on its particular board.
 //
 // Deliberately uses only plain single-line SPI (standard 0x03 READ /
 // 0x02 WRITE commands, 24-bit address), NOT flash's continuous-read
@@ -37,20 +57,22 @@
 // divider field (sys_clk/2, /8, /32, /128) -- in AgilA8 that field only
 // ever gated its own standalone generic SPI peripheral (CS2), never
 // flash/PSRAM, which always ran at a fixed HALF_PERIOD_CYCLES=1
-// regardless of it. AgilA32 has no generic SPI peripheral yet (see the
-// porting roadmap's feature #4, not yet started), so `req_div_sel`
-// here gates THIS engine's actual flash/PSRAM timing directly instead
-// -- the thing AgilA8's roadmap entry says this is really for:
-// de-risking validation of the external memory path against real
-// hardware. mem.v's QSPI_CTRL register (0xFB) resets to 2'd3 (the
-// slowest setting, sys_clk/128), matching AgilA8's own reset-safe
-// default, and is left there by the boot ROM -- exactly like
-// FLASH_MODE, the boot ROM itself never touches QSPI_CTRL either; it's
-// there for whatever gets bootloaded (or runs from flash) to speed up
-// once a real device's timing is confirmed safe at the slow, safe
-// default. `req_div_sel` at 2'd0 reproduces the exact fixed-fast
-// timing this engine always ran at before this register existed
-// (bit-for-bit identical cycle count per transaction, confirmed in
+// regardless of it. AgilA32 unifies this instead: mem.v's QSPI_CTRL
+// register (0xFB) gates every front-end through this ONE shared
+// engine -- flash, PSRAM, and now the generic SPI peripheral too --
+// rather than giving the generic peripheral a second, separate divider
+// field the way AgilA8's own CTRL register did (redundant now that
+// this engine's timing is already unified across every owner; see
+// mem.v's SPI_DATA register comment for the resulting one-register,
+// not two-register, design). QSPI_CTRL resets to 2'd3 (the slowest
+// setting, sys_clk/128), matching AgilA8's own reset-safe default, and
+// is left there by the boot ROM -- exactly like FLASH_MODE, the boot
+// ROM itself never touches QSPI_CTRL either; it's there for whatever
+// gets bootloaded (or runs from flash) to speed up once a real
+// device's timing is confirmed safe at the slow, safe default.
+// `req_div_sel` at 2'd0 reproduces the exact fixed-fast timing this
+// engine always ran at before this register existed (bit-for-bit
+// identical cycle count per transaction, confirmed in
 // test/tb_qspi_clkdiv.v), so nothing downstream needs to change to
 // keep running exactly as fast as before -- it just isn't the reset
 // default anymore.
@@ -66,7 +88,9 @@
 // variable width (8/16/32 bits), the data bytes must sit at the TOP
 // of the data field (immediately after the address bits), not at a
 // fixed low position -- see build_preload() below, this is the exact
-// bug this version fixes relative to an earlier draft.
+// bug this version fixes relative to an earlier draft. (Doesn't apply
+// to the generic SPI peripheral -- that front-end has no command/
+// address phase at all, just a single raw byte.)
 
 `default_nettype none
 
@@ -77,7 +101,9 @@ module qspi_shared_engine (
     // request interface (mem.v side)
     input  wire        req_valid,   // held high for the whole transaction
     input  wire        req_we,      // 0 = read, 1 = write
-    input  wire [1:0]  req_dev,     // 2'd1 = flash (CS0), 2'd2 = psram RAM A (CS1),
+    input  wire [1:0]  req_dev,     // 2'd0 = generic SPI peripheral (CS2, raw
+                                     // byte, no cmd/addr framing), 2'd1 =
+                                     // flash (CS0), 2'd2 = psram RAM A (CS1),
                                      // 2'd3 = psram RAM B (CS2)
     input  wire [23:0] req_addr,    // byte address within the selected device
     input  wire [31:0] req_wdata,
@@ -106,6 +132,10 @@ module qspi_shared_engine (
     // Only the top (32 + nbytes*8) bits of this ever actually get
     // shifted out, so the data field is packed against the top of its
     // 32-bit region (right after the address), not against the bottom.
+    // NOT used for the generic SPI peripheral (req_dev==2'd0) -- that
+    // front-end has no cmd/addr phase at all, see ST_IDLE below, which
+    // left-justifies the raw byte into sreg's top 8 bits directly
+    // instead of calling this function.
     function [63:0] build_preload;
         input        we;
         input [1:0]  size;
@@ -204,16 +234,36 @@ module qspi_shared_engine (
                     if (req_valid) begin
                         pin_cs0 <= (req_dev == 2'd1) ? 1'b0 : 1'b1;
                         pin_cs1 <= (req_dev == 2'd2) ? 1'b0 : 1'b1;
-                        pin_cs2 <= (req_dev == 2'd3) ? 1'b0 : 1'b1;
+                        // RAM B and the generic SPI peripheral share the
+                        // same physical CS2 pin (see header) -- either
+                        // req_dev asserts it, mutually exclusive by which
+                        // device is actually wired there, not by this mux.
+                        pin_cs2 <= (req_dev == 2'd3 || req_dev == 2'd0) ? 1'b0 : 1'b1;
 
-                        data_bits   <= (req_size == 2'd0) ? 6'd8  :
+                        // Generic SPI (req_dev==2'd0): always exactly one
+                        // raw byte, no cmd/addr framing, req_size ignored
+                        // (mem.v documents SPI_DATA as byte-only -- see
+                        // that register's comment). Every other req_dev:
+                        // unchanged 32-bit cmd+addr phase plus req_size-
+                        // wide data phase.
+                        data_bits   <= (req_dev == 2'd0) ? 6'd8 :
+                                       (req_size == 2'd0) ? 6'd8  :
                                        (req_size == 2'd1) ? 6'd16 : 6'd32;
-                        nbits_total <= 7'd32 +
+                        nbits_total <= (req_dev == 2'd0) ? 7'd8 : 7'd32 +
                                        ((req_size == 2'd0) ? 7'd8  :
                                         (req_size == 2'd1) ? 7'd16 : 7'd32);
                         bits_done   <= 7'd0;
 
-                        sreg  <= build_preload(req_we, req_size, req_addr, req_wdata);
+                        // Generic SPI: left-justify the raw byte into
+                        // sreg's top 8 bits directly (same left-justify-
+                        // the-payload technique the header describes for
+                        // build_preload's data field, just with no cmd/
+                        // addr phase in front of it at all) -- nbits_total
+                        // = 8 means only these top 8 bits ever get shifted
+                        // out, whatever ends up in the rest of sreg is
+                        // don't-care.
+                        sreg  <= (req_dev == 2'd0) ? {req_wdata[7:0], 56'h0}
+                                                    : build_preload(req_we, req_size, req_addr, req_wdata);
                         half_period_r <= half_period_for(req_div_sel);
                         div_cnt       <= 8'd0;
                         state <= ST_SHIFT_LO;

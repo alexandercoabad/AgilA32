@@ -117,6 +117,17 @@
 //                   execution" further down for what this is for and why
 //                   it needs care to use correctly -- don't write it from
 //                   hand-assembled code without reading that section.
+//   0xFD        : SPI_DATA   (memory-mapped, read/write) -- generic SPI
+//                   peripheral, ported from AgilA8's spi_ctrl.v. Writing
+//                   a byte here clocks it out MOSI-first (CS2, no cmd/
+//                   addr framing at all -- byte-only, not word/half:
+//                   see "Generic SPI peripheral" below) and simultaneously
+//                   captures whatever MISO returns during those same 8
+//                   clocks; reading it back (no write) returns that
+//                   captured byte immediately, without re-triggering any
+//                   hardware transfer -- exactly AgilA8's spi_ctrl "plain
+//                   read returns the last transfer's byte" behavior.
+//                   Resets to 0x00 (nothing has been clocked in yet).
 //
 // Word accesses (LW/SW) must be 4-byte aligned. Byte/half accesses
 // (LB/LH/SB/SH) are supported at any address within a region, including
@@ -344,6 +355,15 @@ module mem #(
     // clock divider" below. Only bits[1:0] are meaningful.
     reg [1:0] qspi_div_sel;
 
+    // SPI_DATA's persistent last-received-byte latch -- see "Generic
+    // SPI peripheral" below for why this exists (a plain read must
+    // return this without re-triggering any hardware transfer, ported
+    // from AgilA8's spi_ctrl.v/a8_peripherals.v spi_last_rx). Latched
+    // straight from ext_rdata whenever a SPI_DATA *write* transaction
+    // (the only kind that actually reaches the engine -- see
+    // in_spi_write below) completes.
+    reg [7:0] spi_last_rx;
+
     // ---------------------------------------------------------------
     // Timer + PWM, ported from AgilA8's a8_peripherals.v (same bit
     // layout/behavior, see header above for the register map). Both
@@ -427,21 +447,32 @@ module mem #(
 
     // ---------------------------------------------------------------
     // External windows via qspi_shared_engine: the LOAD_BASE sub-range
-    // when FLASH_MODE is set (CS0/flash), and the PSRAM window
-    // (CS1/psram) always. Only one is ever selected for a given
-    // access, and the CPU only ever has one access outstanding at a
-    // time (mem_valid is never asserted for two different addresses
-    // in the same cycle), so a single shared request bus is safe --
-    // same reasoning qspi_shared_engine's own header documents.
+    // when FLASH_MODE is set (CS0/flash), the PSRAM window (CS1/psram)
+    // always, and SPI_DATA writes (CS2, generic peripheral -- see
+    // "Generic SPI peripheral" below). Only one is ever selected for a
+    // given access, and the CPU only ever has one access outstanding
+    // at a time (mem_valid is never asserted for two different
+    // addresses in the same cycle), so a single shared request bus is
+    // safe -- same reasoning qspi_shared_engine's own header
+    // documents.
     // ---------------------------------------------------------------
     wire in_ext_psram = (addr >= EXT_PSRAM_BASE) && (addr < (EXT_PSRAM_BASE + EXT_PSRAM_BYTES));
-    wire in_ext       = in_ext_flash || in_ext_psram;
+    // Only a WRITE to SPI_DATA reaches the engine -- a plain read
+    // returns spi_last_rx directly (see the read path below), no
+    // hardware transfer, matching AgilA8's spi_ctrl.v exactly. `we`
+    // here is `valid`-independent by design (same pattern in_ext_flash
+    // already uses above); in_ext itself is only ever consulted where
+    // `valid` also gates it (ext_req_valid, ready), same as always.
+    wire in_spi_write = (addr == 8'hFD) && we;
+    wire in_ext       = in_ext_flash || in_ext_psram || in_spi_write;
 
-    // 1=flash(CS0) 2=psram RAM A(CS1) 3=psram RAM B(CS2) -- PSRAM_BANK
-    // picks between the last two; flash always wins the mux since
-    // in_ext_flash and in_ext_psram are mutually exclusive by address
-    // range (see in_ram/in_ext_flash above).
-    wire [1:0]  req_dev  = in_ext_flash ? 2'd1 : (psram_bank ? 2'd3 : 2'd2);
+    // 0=generic SPI(CS2) 1=flash(CS0) 2=psram RAM A(CS1) 3=psram RAM
+    // B(CS2) -- PSRAM_BANK picks between the last two; flash and
+    // SPI_DATA always win their own slots since in_ext_flash,
+    // in_spi_write, and in_ext_psram are mutually exclusive by address
+    // range/decode (see in_ram/in_ext_flash above and in_spi_write's
+    // own addr==0xFD check).
+    wire [1:0]  req_dev  = in_ext_flash ? 2'd1 : in_spi_write ? 2'd0 : (psram_bank ? 2'd3 : 2'd2);
 
     // ---------------------------------------------------------------
     // Bank-switched flash execution
@@ -479,10 +510,45 @@ module mem #(
     // flash programs without it.
     localparam WINDOW_BYTES = (RAM_BASE + RAM_BYTES) - LOAD_BASE;
 
+    // ---------------------------------------------------------------
+    // Generic SPI peripheral
+    // ---------------------------------------------------------------
+    // Ported from AgilA8's spi_ctrl.v/qspi_shared_engine.v CS2 owner --
+    // a raw 8-bit SPI transfer with no command/address framing at all,
+    // for talking to whatever non-flash/PSRAM SPI device a board
+    // happens to have wired to CS2 (an ADC, another MCU, an LCD
+    // controller not already covered by a dedicated driver, etc).
+    // SPI_DATA (0xFD) is the whole interface: an SB write clocks that
+    // byte out MOSI-first and captures MISO's response in the same 8
+    // clocks into spi_last_rx; an LBU read of the same address returns
+    // spi_last_rx immediately, without clocking anything -- so a
+    // multi-byte exchange with a real device is a sequence of SB-then-
+    // LBU pairs, not one write followed by however many free reads the
+    // device might want to offer.
+    //
+    // Shares CS2 with PSRAM "RAM B" (see PSRAM_BANK above) -- NOT a
+    // separate pin. The stock Tiny Tapeout QSPI Pmod wires CS2 straight
+    // to a second, populated PSRAM chip; reaching a *different* device
+    // on that pin needs the same board-level trace cut AgilA8's own
+    // CS2 has always required (there's no spare CS-capable pin on the
+    // board otherwise -- see qspi_shared_engine.v's header for the
+    // full reasoning). A program should only ever use one of
+    // PSRAM_BANK=1 or SPI_DATA, never both, depending on what's
+    // actually populated on its particular board -- this RTL doesn't
+    // arbitrate between them, the same way it never has for AgilA8's
+    // CS2 either.
+    //
+
     wire [23:0] flash_page_base = flash_page * WINDOW_BYTES; // constant multiply, synthesizes as a couple of adders
+    // Generic SPI (in_spi_write): req_addr is unused by the engine for
+    // req_dev==2'd0 (no cmd/addr framing at all -- see
+    // qspi_shared_engine.v's ST_IDLE), so any well-defined value is
+    // fine here; 24'h0 keeps this an honest "don't-care, not garbage".
     wire [23:0] ext_addr = in_ext_flash
         ? (flash_page_base + {16'h0, (addr - LOAD_BASE)})
-        : {16'h0, (addr - EXT_PSRAM_BASE)};
+        : in_spi_write
+            ? 24'h0
+            : {16'h0, (addr - EXT_PSRAM_BASE)};
 
     // Flash is read-only from this port -- real NOR flash needs an
     // erase/program sequence a plain 0x02 command can't provide, so
@@ -554,6 +620,14 @@ module mem #(
             rdata = {30'b0, qspi_div_sel};
         end else if (addr == 8'hFC) begin
             rdata = {24'b0, flash_page};
+        end else if (addr == 8'hFD) begin
+            // Plain read (we=0, so in_spi_write/in_ext are both false
+            // for this access -- the `in_ext` branch above never fires
+            // for a SPI_DATA read): return the last byte a SPI_DATA
+            // WRITE actually clocked in, no hardware transfer, same
+            // single-cycle response every other register on this bus
+            // gets. See spi_last_rx's declaration and latch for why.
+            rdata = {24'b0, spi_last_rx};
         end else begin
             rdata = 32'h0;
         end
@@ -571,6 +645,7 @@ module mem #(
                                    // pre-CS2 revision's behavior
             qspi_div_sel <= 2'd3; // reset default = slowest (sys_clk/128),
                                    // matches AgilA8's own reset-safe default
+            spi_last_rx  <= 8'h00;
         end else if (we) begin
             if (in_ram_range && !in_ext_flash) begin
                 case (size)
@@ -600,7 +675,28 @@ module mem #(
             end else if (addr == 8'hFC) begin
                 flash_page <= wdata[7:0];   // the written value IS the new page, unlike FLASH_MODE
             end
+            // 0xFD (SPI_DATA) is deliberately NOT handled in this
+            // if/else-if chain -- unlike every other register here,
+            // a SPI_DATA write doesn't complete this same cycle; it
+            // goes through in_spi_write/qspi_shared_engine instead
+            // (see the instantiation above) and takes multiple cycles,
+            // same as any other external transaction. See spi_last_rx's
+            // latch just below.
         end
+
+        // spi_last_rx: latched independently of the `we`-gated chain
+        // above (and NOT reset-gated -- rst_n already covers it in the
+        // branch above) because it fires on ext_ready, which pulses
+        // several cycles AFTER the store that requested it, not on the
+        // same edge `we` was sampled. `in_spi_write` is still correctly
+        // asserted on that later cycle -- addr/we/valid are all held
+        // constant by the core's own wait-state protocol (see
+        // rv32i_core.v's ST_MEM_WAIT) for the whole transaction, only
+        // clearing the SAME cycle `ready` (here, `ext_ready`) pulses,
+        // not before -- see qspi_shared_engine.v's ST_POST comment for
+        // the matching reasoning on the engine's own side of this race.
+        if (rst_n && ext_ready && in_spi_write)
+            spi_last_rx <= ext_rdata[7:0];
     end
 
 endmodule

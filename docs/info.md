@@ -90,6 +90,8 @@ smaller 256-byte address space:
   `2'd3` (slowest). See "Variable SPI clock divider" below.
 - `0xFC`: memory-mapped **FLASH_PAGE register**, read/write, resets to
   0. See "Bank-switched flash execution" below.
+- `0xFD`: memory-mapped **SPI_DATA register**, read/write, resets to
+  0x00. See "Generic SPI peripheral" below.
 
 ### What the boot ROM does
 
@@ -446,7 +448,18 @@ never perturbs a transaction already in progress; Part 2 drives
 reads back what's written, and that a write actually reaches the
 engine and changes real external-access timing end to end in both
 directions, with the same mid-flight-immunity guarantee holding
-through the register path too.
+through the register path too; and `tb_spi_periph.v` covers the
+generic SPI peripheral above: Part 1 drives `qspi_shared_engine.v`
+directly and confirms a raw byte gets exactly 8 bits on the wire (no
+cmd/addr phase), MOSI-first, with only CS2 asserted, and that a
+write's simultaneously-captured MISO byte round-trips correctly; Part
+2 drives `mem.v` directly (with a standing "echo slave" process on
+MISO) and confirms `SPI_DATA` resets to `0x00`, a plain read never
+touches hardware (zero wait cycles, zero SCK pulses), a write is a
+real 8-SCK-pulse transfer that leaves flash/RAM-A untouched, and --
+the actual point of this port -- repeated reads after a write keep
+returning the same captured byte for free, never re-triggering a
+transfer.
 
 **Known limitation:** the external RAM/flash windows have only been
 validated against the behavioral model in `spi_ram_model.v`, not a real
@@ -513,13 +526,11 @@ window this address space has no room for.
 Ported from AgilA8's `SPI_CTRL` clock-divider field -- in AgilA8 that
 field only ever gated its own standalone generic SPI peripheral (CS2),
 never flash/PSRAM, which always ran at a fixed speed regardless of it.
-This core has no generic SPI peripheral yet, so `QSPI_CTRL` (`0xFB`,
-read/write, resets to `2'd3`) gates `qspi_shared_engine.v`'s actual
-flash/PSRAM SCK rate directly instead -- the thing AgilA8's own
-roadmap entry for this field says it's really for: de-risking
-validation of the external memory path against real hardware by
-starting slow and speeding up only once a real device's timing has
-been confirmed safe.
+This core unifies the two: `QSPI_CTRL` (`0xFB`, read/write, resets to
+`2'd3`) gates `qspi_shared_engine.v`'s SCK rate for every front-end
+through it -- flash, PSRAM, and the generic SPI peripheral below --
+rather than giving the generic peripheral a second, separate divider
+field the way AgilA8's own `CTRL` register did.
 
 - `QSPI_CTRL = 2'd0`: SCK = `clk`/2 -- the fastest setting, and the
   exact fixed speed this engine always ran at before this register
@@ -540,6 +551,40 @@ whole duration -- a write to `QSPI_CTRL` while a transfer is already
 in flight can never corrupt it partway through; it only takes effect
 starting with the *next* transaction. Confirmed both at the engine
 level directly and through `mem.v`'s register in `test/tb_qspi_clkdiv.v`.
+
+#### Generic SPI peripheral
+
+Ported from AgilA8's `spi_ctrl.v`/`qspi_shared_engine.v` CS2 owner -- a
+raw 8-bit SPI transfer with no command/address framing at all, for
+talking to whatever non-flash/PSRAM SPI device a board happens to have
+wired to CS2 (an ADC, another MCU, an LCD controller not already
+covered by a dedicated driver, etc), unlike flash/PSRAM/RAM B's fixed
+`0x02`/`0x03` command protocol.
+
+`SPI_DATA` (`0xFD`) is the whole interface:
+
+- **Write** (`SB`): clocks the written byte out MOSI-first over the
+  same 8 SCK cycles that simultaneously capture whatever MISO returns,
+  latching that captured byte.
+- **Read** (`LBU`), no write: returns the last captured byte
+  immediately, in a single cycle, *without* re-triggering any hardware
+  transfer -- ported directly from AgilA8's `spi_ctrl.v` "plain read
+  returns the last transfer's byte" behavior. A multi-byte exchange
+  with a real device is therefore a sequence of write-then-read pairs,
+  not one write followed by however many free reads the device might
+  seem to offer.
+
+Resets to `0x00` (nothing has been clocked in yet).
+
+Shares CS2 with PSRAM "RAM B" (see "PSRAM_BANK (RAM B)" above) -- NOT
+a separate pin; the stock Tiny Tapeout QSPI Pmod has no spare
+CS-capable pin (`uio[4]`/`uio[5]` are the flash chip's WP/HOLD lines,
+not general-purpose). Reaching a *different* device on CS2 needs the
+same board-level trace cut AgilA8's own CS2 has always required. A
+program should only ever use one of `PSRAM_BANK = 1` or `SPI_DATA`,
+never both, depending on what's actually populated on its particular
+board -- this RTL doesn't arbitrate between them, any more than it
+ever has for AgilA8's own CS2.
 
 #### Timer / PWM
 

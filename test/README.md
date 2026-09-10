@@ -34,7 +34,7 @@ This will generate `tb.vcd` instead of `tb.fst`.
 
 ## Additional standalone testbenches
 
-Fourteen extra testbenches cover the QSPI external-memory addition, the
+Fifteen extra testbenches cover the QSPI external-memory addition, the
 reprogrammable boot ROM (self-test + demo/listen loop + bootloader),
 the boot-timeout automatic flash fallback, the FLASH_MODE handoff to
 external flash, FLASH_PAGE bank-switched flash execution, a real
@@ -45,10 +45,12 @@ standalone ALU/instruction-encoding check for
 enable/reset/overflow, PWM duty cycle at 0x00/0x80/0xFF, and the
 PIN_MUX wiring onto uo_out[7]), the EBREAK-halts-the-core behavior
 (FSM parks in ST_HALTED, `halted` output, and PIN_MUX's halted-status
-mode), and the variable SPI clock divider (QSPI_CTRL's four SCK rates,
-latch-at-accept-time, end-to-end through mem.v). They're plain Icarus
-testbenches, not cocotb, so they don't run as part of `make` above --
-run them together with:
+mode), the variable SPI clock divider (QSPI_CTRL's four SCK rates,
+latch-at-accept-time, end-to-end through mem.v), and the generic SPI
+peripheral (SPI_DATA's raw-byte framing and its no-hardware-retrigger
+plain-read behavior, engine-level and end-to-end through mem.v).
+They're plain Icarus testbenches, not cocotb, so they don't run as
+part of `make` above -- run them together with:
 
 ```sh
 make standalone-tests
@@ -174,6 +176,21 @@ iverilog -g2012 -I ../src -o /tmp/tb13.vvp ../src/tt_um_agila32.v ../src/rv32i_c
 # timing end to end in both directions, with the same mid-flight-
 # immunity guarantee holding through the register path too.
 iverilog -g2012 -I ../src -o /tmp/tb14.vvp ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_qspi_clkdiv.v && vvp /tmp/tb14.vvp
+
+# Generic SPI peripheral (SPI_DATA, 0xFD), ported from AgilA8's
+# spi_ctrl.v. Part 1 drives qspi_shared_engine directly (req_dev=2'd0)
+# and confirms a raw byte gets exactly 8 bits on the wire (no cmd/addr
+# framing at all), MOSI-first, with only CS2 asserted, and that a
+# write's simultaneously-captured MISO byte round-trips correctly.
+# Part 2 drives mem.v directly (with a standing "echo slave" process
+# on MISO, since Part 2 doesn't sequence a fixed miso-drive task the
+# way Part 1 does) and confirms SPI_DATA resets to 0x00, a plain read
+# never touches hardware at all (zero wait cycles, zero SCK pulses),
+# a write is a real 8-SCK-pulse transfer that leaves flash/RAM-A CS
+# untouched, and -- the actual point of this port -- repeated reads
+# after a write keep returning the same captured byte for free, never
+# re-triggering a transfer.
+iverilog -g2012 -I ../src -o /tmp/tb15.vvp ../src/mem.v ../src/qspi_shared_engine.v tb_spi_periph.v && vvp /tmp/tb15.vvp
 ```
 
 None of these has been checked against a real flash/PSRAM chip or a

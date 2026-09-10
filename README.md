@@ -103,6 +103,18 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
       before, it just isn't the default anymore -- see
       `test/tb_qspi_clkdiv.v` and docs/info.md's "Variable SPI clock
       divider" section
+- [x] **Generic SPI peripheral (CS2)**, ported from AgilA8's
+      `spi_ctrl.v`: `SPI_DATA` (`0xFD`) is a raw 8-bit transfer with no
+      command/address framing, sharing CS2 with PSRAM "RAM B" -- **requires
+      one board modification** (a trace cut on the QSPI Pmod, same as
+      AgilA8's own CS2 always needed) before it can reach anything
+      external; functionally inert until then -- see "General-purpose
+      SPI (CS2)" below for the full caveat. An `SB` write clocks the
+      byte out and simultaneously captures MISO; a plain `LBU` read
+      returns the captured byte immediately, with zero wait cycles and
+      no hardware retrigger, exactly AgilA8's `spi_ctrl.v` behavior --
+      see `test/tb_spi_periph.v` and docs/info.md's "Generic SPI
+      peripheral" section
 - [x] **Bank-switched flash execution**: a bootloaded 1-instruction
       stub can hand off into external flash (`FLASH_MODE`), and
       `FLASH_PAGE` lets a running program page through a flash image
@@ -122,9 +134,9 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
       tiles, 53.8% routing utilization, 12,548 cells (excluding
       fill/tap), clean DRC/precheck (15/15 checks) and gate-level tests
       (11/11) -- see `.github/workflows/gds.yaml` run history
-- [x] Fifteen test suites (see "Testing locally" below): on-chip
+- [x] Sixteen test suites (see "Testing locally" below): on-chip
       cocotb regression (self-test, demo counter, full bootload-and-run)
-      plus fourteen standalone Icarus testbenches -- QSPI engine
+      plus fifteen standalone Icarus testbenches -- QSPI engine
       bit-level protocol, external-window integration via direct bus
       driving, full CPU-driven external load/store, self-test/bootload,
       `FLASH_MODE` handoff to external flash, `FLASH_PAGE`
@@ -132,11 +144,12 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
       reader (raw scancodes, then scancode-to-ASCII translation), an
       instruction-encoding check for every opcode
       `tools/asm_pineapple.py` wraps, the Timer/PWM peripheral, the
-      EBREAK-halt behavior, the boot-timeout flash fallback, and the
-      variable SPI clock divider (`test/tb_timer_pwm.v`,
-      `test/tb_ebreak_halt.v`, `test/tb_boot_timeout.v`,
-      `test/tb_qspi_clkdiv.v`) -- all wired into CI, all gating the
-      build, all 11 cocotb tests + all 14 standalone tests currently
+      EBREAK-halt behavior, the boot-timeout flash fallback, the
+      variable SPI clock divider, and the generic SPI peripheral
+      (`test/tb_timer_pwm.v`, `test/tb_ebreak_halt.v`,
+      `test/tb_boot_timeout.v`, `test/tb_qspi_clkdiv.v`,
+      `test/tb_spi_periph.v`) -- all wired into CI, all gating the
+      build, all 11 cocotb tests + all 15 standalone tests currently
       passing
 - [ ] **Step 3, in progress:** a bitmap font + terminal renderer tying
       the PS/2 reader to the ST7789 driver, so keystrokes actually
@@ -189,6 +202,7 @@ test/
   tb_ps2_reader.v         standalone: raw PS/2 frames -> GPIO_OUT (Step 1)
   tb_ps2_ascii.v          standalone: PS/2 frames -> translated ASCII on GPIO_OUT (Step 2)
   tb_qspi_clkdiv.v        standalone: QSPI_CTRL clock-divider timing, engine-level and through mem.v
+  tb_spi_periph.v         standalone: generic SPI peripheral (SPI_DATA, CS2), engine-level and through mem.v
   alu_test_mem.v          minimal flat ROM+RAM harness (not mem.v) used only by tb_alu_test.v
   tb_alu_test.v           standalone: every asm_pineapple.py opcode, run through the real core, checked
                           against hand-computed register values
@@ -214,9 +228,9 @@ external flash are in [docs/info.md](docs/info.md).
 cd test
 pip install -r requirements.txt
 make                    # cocotb: self-test, demo counter, full bootload-and-run
-make standalone-tests   # QSPI engine, clock divider, external-window, full-CPU, self-test/bootload,
-                         # FLASH_MODE handoff, FLASH_PAGE bank-switching, ST7789 driver, PS/2 reader/ASCII,
-                         # and asm_pineapple.py instruction-encoding tests
+make standalone-tests   # QSPI engine, clock divider, generic SPI peripheral, external-window, full-CPU,
+                         # self-test/bootload, FLASH_MODE handoff, FLASH_PAGE bank-switching, ST7789 driver,
+                         # PS/2 reader/ASCII, and asm_pineapple.py instruction-encoding tests
 ```
 
 Both targets are also run automatically by `.github/workflows/test.yaml`
@@ -249,6 +263,43 @@ the CPU's address bus is still 8 bits wide. Reaching the Pmod's real
 capacity as a flat address space means widening `pc`/`mem_addr` and the
 jump/branch immediate math throughout `rv32i_core.v` — a bigger
 follow-up change, not yet done here.
+
+### General-purpose SPI (CS2) - requires one board modification
+
+A fourth front-end, `SPI_DATA` (`0xFD`) — a raw byte-oriented SPI
+master intended for driving an external device (an LCD, an ADC,
+another MCU) — shares the same physical lines using CS2, alongside
+PSRAM "RAM B" (`PSRAM_BANK = 1`). **This requires one board
+modification first**: on the stock QSPI Pmod, CS2 ("RAM B") is wired
+directly to a second, populated PSRAM chip, not out to any external
+connector pin. Per the Pmod's own documentation
+([mole99/qspi-pmod](https://github.com/mole99/qspi-pmod)), each of its
+three chip-select traces can be cut on the back of the board — doing
+so for CS2 disables that second PSRAM chip (a 1k pull-up holds its
+`/CS` disabled) and makes the pad available via a through-hole header
+pin as a plain input or output. That's a documented, intended
+modification on the board as sold, not a custom respin — and it
+leaves flash (CS0) and PSRAM RAM A (CS1) untouched, so the external
+flash window and the boot ROM's own self-test are unaffected either
+way.
+
+Until that trace is cut, this peripheral is functionally inert: CS2
+still selects the live RAM B chip, so `SPI_DATA` transfers just talk
+to that PSRAM with the wrong command protocol rather than reaching any
+external device. A program should only ever use one of `PSRAM_BANK =
+1` or `SPI_DATA`, never both, depending on what's actually populated
+on its particular board — see `qspi_shared_engine.v`'s header and
+docs/info.md's "Generic SPI peripheral" section for the full
+explanation.
+
+If you don't want to modify the board (or just want the simplest path
+for something slow enough that bit-banging is a non-issue, like an
+e-paper display), drive the external device over the GPIO pins in
+software instead — `uo_out[6:0]` and `ui_in[7:0]` are on a separate
+header from the QSPI Pmod's `uio` bus entirely, so they aren't
+affected by any of the above either way. The ST7789 driver and PS/2
+reader both already do exactly this (see "How the boot ROM works"
+above and docs/info.md).
 
 ## What is Tiny Tapeout?
 
