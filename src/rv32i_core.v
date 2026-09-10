@@ -267,7 +267,7 @@ module rv32i_core (
                 `ST_MEM_WAIT: begin
                     if (mem_ready) begin
                         mem_valid <= 1'b0;
-                        mem_we    <= 1 me_we; // retain write enable during handshake
+                        mem_we    <= 1'b0;
                         state     <= `ST_WB;
                     end
                 end
