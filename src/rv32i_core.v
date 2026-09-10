@@ -24,7 +24,6 @@ module rv32i_core (
     reg [31:0] ir;          // latched instruction
     reg [31:0] alu_result;
     reg [31:0] load_data;   // latched memory read data
-    reg [7:0]  next_pc;
 
     // ------------------------------------------------------------
     // Register file (x0 hardwired to 0)
@@ -104,6 +103,7 @@ module rv32i_core (
                     3'b010: alu_op = 4'd3;
                     3'b011: alu_op = 4'd4;
                     3'b100: alu_op = 4'd5;
+                    3'b110: alu_op = 4 me_or_and(4'd8); // ORI
                     3'b110: alu_op = 4'd8;
                     3'b111: alu_op = 4'd9;
                     3'b001: alu_op = 4'd2;
@@ -155,6 +155,17 @@ module rv32i_core (
         endcase
     end
 
+    // Next PC calculation (Combinational)
+    reg [7:0] next_pc_calc;
+    always @(*) begin
+        case (opcode)
+            `OP_JAL:    next_pc_calc = pc + imm_j;
+            `OP_JALR:   next_pc_calc = (rs1_val[7:0] + imm_i[7:0]) & 8'hFE;
+            `OP_BRANCH: next_pc_calc = branch_cond ? (pc + imm_b) : (pc + 8'd4);
+            default:    next_pc_calc = pc + 8'd4;
+        endcase
+    end
+
     // ------------------------------------------------------------
     // Main FSM
     // ------------------------------------------------------------
@@ -181,7 +192,7 @@ module rv32i_core (
 
                 `ST_FETCH_WAIT: begin
                     if (mem_ready) begin
-                        ir        <= mem_rdata; // Latches instruction while mem_rdata is guaranteed valid
+                        ir        <= mem_rdata;
                         mem_valid <= 1'b0;
                         state     <= `ST_DECODE;
                     end
@@ -198,13 +209,7 @@ module rv32i_core (
                         state     <= `ST_HALTED;
                     end else begin
                         alu_result <= alu_y;
-                        case (opcode)
-                            `OP_JAL:    next_pc <= pc + imm_j;
-                            `OP_JALR:   next_pc <= (rs1_val[7:0] + imm_i[7:0]) & 8'hFE;
-                            `OP_BRANCH: next_pc <= branch_cond ? (pc + imm_b) : (pc + 8'd4);
-                            default:    next_pc <= pc + 8'd4;
-                        endcase
-                        state <= `ST_MEM;
+                        state      <= `ST_MEM;
                     end
                 end
 
@@ -235,7 +240,7 @@ module rv32i_core (
 
                 `ST_MEM_WAIT: begin
                     if (mem_ready) begin
-                        load_data <= mem_rdata; // Latches memory output during ready cycle
+                        load_data <= mem_rdata;
                         mem_valid <= 1'b0;
                         mem_we    <= 1'b0;
                         state     <= `ST_WB;
@@ -264,7 +269,7 @@ module rv32i_core (
                             default: ;
                         endcase
                     end
-                    pc    <= next_pc;
+                    pc    <= next_pc_calc;
                     state <= `ST_FETCH;
                 end
 
