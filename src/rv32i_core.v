@@ -132,6 +132,16 @@ module rv32i_core (
         alu_b = rs2_val;
         alu_op = 4'd0;
         case (opcode)
+            `OP_LUI: begin
+                alu_a = 32'h0;
+                alu_b = imm_u;
+                alu_op = 4'd0;
+            end
+            `OP_AUIPC: begin
+                alu_a = {24'b0, pc};
+                alu_b = imm_u;
+                alu_op = 4'd0;
+            end
             `OP_IMM: begin
                 alu_b = imm_i;
                 case (funct3)
@@ -283,7 +293,7 @@ module rv32i_core (
                     if (rd != 5'd0) begin
                         case (opcode)
                             `OP_LUI:   regs[rd] <= imm_u;
-                            `OP_AUIPC: regs[rd] <= {24'b0, pc} + imm_u;
+                            `OP_AUIPC: regs[rd] <= alu_result;
                             `OP_JAL:   regs[rd] <= {24'b0, pc} + 32'd4;
                             `OP_JALR:  regs[rd] <= {24'b0, pc} + 32'd4;
                             `OP_LOAD: begin
