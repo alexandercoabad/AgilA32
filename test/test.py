@@ -111,7 +111,39 @@ async def reset_dut(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
+    speed_up_qspi(dut)
     await ClockCycles(dut.clk, 1)
+
+
+def speed_up_qspi(dut):
+    """Forces QSPI_CTRL's clock divider to 2'd0 (fastest) right after
+    reset -- QSPI_CTRL (0xFB) now resets to 2'd3 (sys_clk/128, the
+    slowest setting -- see docs/info.md's "Variable SPI clock divider"
+    section), so every self-test QSPI transaction the boot ROM runs
+    takes ~64x longer than these tests' cycle budgets were written
+    for. Standing in for "hardware whose real SPI timing has already
+    been confirmed safe" (exactly QSPI_CTRL's intended real-world
+    usage) rather than inflating every wait/timeout here by 64x, which
+    is the same fix CHANGES_feature3.md already applied to the
+    standalone Icarus testbenches (tb_check.v etc.) -- this closes the
+    gap where test.py itself was missed.
+
+    Gate-level netlists (this same test.py also runs under GATES=yes
+    against a synthesized, normally-flattened netlist -- see
+    .github/workflows/gds.yaml's gl_test job) don't preserve the
+    `user_project.u_mem` hierarchy this force relies on, so this is
+    wrapped rather than left to throw AttributeError and take the
+    whole GL run down with it. RTL sim (what this fix targets) always
+    has the hierarchy, so the force always actually happens there;
+    under GATES=yes it's a silent no-op, and GL runs fall back to
+    running at QSPI_CTRL's real slow reset-default speed -- which
+    means GL's own cycle budgets need to be wide enough to tolerate
+    that (not yet verified here -- flagged as a follow-up).
+    """
+    try:
+        dut.user_project.u_mem.qspi_div_sel.value = 0
+    except AttributeError:
+        pass
 
 
 async def wait_for_first_led_write(dut, max_cycles=2000):
@@ -212,6 +244,7 @@ async def test_ui_in_upper_bits_do_not_affect_counter(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
+    speed_up_qspi(dut)
 
     last = safe_int(dut.uo_out.value) & 0x0F
     seen_values = {last}
@@ -271,6 +304,7 @@ async def test_selftest_passes_with_pmod(dut):
     cocotb.start_soon(qspi_ram_slave(dut))
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
+    speed_up_qspi(dut)
 
     await wait_for_first_led_write(dut)
 
@@ -298,6 +332,7 @@ async def test_selftest_detects_mismatch(dut):
     cocotb.start_soon(qspi_ram_slave(dut, corrupt_reads=True))
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
+    speed_up_qspi(dut)
 
     await wait_for_first_led_write(dut)
 
@@ -320,6 +355,7 @@ async def test_selftest_transaction_addresses_match(dut):
     cocotb.start_soon(qspi_ram_slave(dut, log=txns))
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
+    speed_up_qspi(dut)
 
     await wait_for_first_led_write(dut)
 
@@ -389,6 +425,7 @@ async def test_selftest_passes_again_after_soft_reset(dut):
         dut.rst_n.value = 0
         await ClockCycles(dut.clk, 10)
         dut.rst_n.value = 1
+        speed_up_qspi(dut)  # QSPI_CTRL resets to slow again on every reset
 
         await wait_for_first_led_write(dut)
 
@@ -415,6 +452,7 @@ async def test_bootloader_loads_and_runs_program(dut):
     cocotb.start_soon(qspi_ram_slave(dut))
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
+    speed_up_qspi(dut)
 
     await ClockCycles(dut.clk, 200)
 

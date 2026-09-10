@@ -34,7 +34,7 @@ This will generate `tb.vcd` instead of `tb.fst`.
 
 ## Additional standalone testbenches
 
-Thirteen extra testbenches cover the QSPI external-memory addition, the
+Fourteen extra testbenches cover the QSPI external-memory addition, the
 reprogrammable boot ROM (self-test + demo/listen loop + bootloader),
 the boot-timeout automatic flash fallback, the FLASH_MODE handoff to
 external flash, FLASH_PAGE bank-switched flash execution, a real
@@ -43,10 +43,12 @@ scancodes, then scancode-to-ASCII translation) built the same way, a
 standalone ALU/instruction-encoding check for
 `tools/asm_pineapple.py` itself, the Timer/PWM peripheral (counter
 enable/reset/overflow, PWM duty cycle at 0x00/0x80/0xFF, and the
-PIN_MUX wiring onto uo_out[7]), and the EBREAK-halts-the-core behavior
+PIN_MUX wiring onto uo_out[7]), the EBREAK-halts-the-core behavior
 (FSM parks in ST_HALTED, `halted` output, and PIN_MUX's halted-status
-mode). They're plain Icarus testbenches, not cocotb, so they don't run
-as part of `make` above -- run them together with:
+mode), and the variable SPI clock divider (QSPI_CTRL's four SCK rates,
+latch-at-accept-time, end-to-end through mem.v). They're plain Icarus
+testbenches, not cocotb, so they don't run as part of `make` above --
+run them together with:
 
 ```sh
 make standalone-tests
@@ -156,6 +158,22 @@ iverilog -g2012 -I ../src -o /tmp/tb12.vvp ../src/tt_um_agila32.v ../src/rv32i_c
 # RAM bootload (same 5-instruction program tb_check.v's scenario 3
 # uses), unaffected by the new fallback path.
 iverilog -g2012 -I ../src -o /tmp/tb13.vvp ../src/tt_um_agila32.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_boot_timeout.v && vvp /tmp/tb13.vvp
+
+# Variable SPI clock divider (QSPI_CTRL, 0xFB), ported from AgilA8's
+# SPI_CTRL clock-divider field: Part 1 drives qspi_shared_engine
+# directly and confirms each req_div_sel setting's SCK half-period (1/
+# 4/16/64 clk cycles, i.e. clk/2, clk/8, clk/32, clk/128) and whole-
+# transaction cycle count exactly match a derived golden formula --
+# including that req_div_sel=0 reproduces the engine's original fixed-
+# speed timing bit-for-bit -- and that changing req_div_sel mid-flight
+# never perturbs a transaction already in progress (latched once, at
+# accept time). Part 2 drives mem.v directly (through the real engine
+# and two behavioral SPI RAM models) and confirms QSPI_CTRL itself
+# resets to 2'd3 (slowest), reads back what's written, and that a
+# write actually reaches the engine and changes real external-access
+# timing end to end in both directions, with the same mid-flight-
+# immunity guarantee holding through the register path too.
+iverilog -g2012 -I ../src -o /tmp/tb14.vvp ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_qspi_clkdiv.v && vvp /tmp/tb14.vvp
 ```
 
 None of these has been checked against a real flash/PSRAM chip or a

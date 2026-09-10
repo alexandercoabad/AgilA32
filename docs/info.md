@@ -86,6 +86,8 @@ smaller 256-byte address space:
   0. See "Timer / PWM" below.
 - `0xFA`: memory-mapped **PIN_MUX register**, read/write, resets to 0.
   See "Timer / PWM" below.
+- `0xFB`: memory-mapped **QSPI_CTRL register**, read/write, resets to
+  `2'd3` (slowest). See "Variable SPI clock divider" below.
 - `0xFC`: memory-mapped **FLASH_PAGE register**, read/write, resets to
   0. See "Bank-switched flash execution" below.
 
@@ -433,7 +435,18 @@ confirms the boot ROM eventually sets `FLASH_MODE` on its own and
 starts executing a canary program preloaded into external flash, with
 no bootload ever attempted; Part 2 confirms a host that responds well
 before the timeout still gets a normal RAM bootload, unaffected by the
-new fallback path.
+new fallback path; and `tb_qspi_clkdiv.v` covers the variable SPI
+clock divider above: Part 1 drives `qspi_shared_engine.v` directly and
+confirms each `QSPI_CTRL` setting's SCK half-period and whole-
+transaction cycle count exactly match the documented `clk`/2, `/8`,
+`/32`, `/128` rates (including that `2'd0` reproduces the engine's
+original fixed-speed timing bit-for-bit), and that a mid-flight change
+never perturbs a transaction already in progress; Part 2 drives
+`mem.v` directly and confirms `QSPI_CTRL` itself resets to `2'd3`,
+reads back what's written, and that a write actually reaches the
+engine and changes real external-access timing end to end in both
+directions, with the same mid-flight-immunity guarantee holding
+through the register path too.
 
 **Known limitation:** the external RAM/flash windows have only been
 validated against the behavioral model in `spi_ram_model.v`, not a real
@@ -494,6 +507,39 @@ Only one chip is reachable at a time through this window -- flip
 bank-switching idea `FLASH_MODE`/`FLASH_PAGE` already use for the flash
 window, applied to the second PSRAM chip instead of adding a dedicated
 window this address space has no room for.
+
+#### Variable SPI clock divider
+
+Ported from AgilA8's `SPI_CTRL` clock-divider field -- in AgilA8 that
+field only ever gated its own standalone generic SPI peripheral (CS2),
+never flash/PSRAM, which always ran at a fixed speed regardless of it.
+This core has no generic SPI peripheral yet, so `QSPI_CTRL` (`0xFB`,
+read/write, resets to `2'd3`) gates `qspi_shared_engine.v`'s actual
+flash/PSRAM SCK rate directly instead -- the thing AgilA8's own
+roadmap entry for this field says it's really for: de-risking
+validation of the external memory path against real hardware by
+starting slow and speeding up only once a real device's timing has
+been confirmed safe.
+
+- `QSPI_CTRL = 2'd0`: SCK = `clk`/2 -- the fastest setting, and the
+  exact fixed speed this engine always ran at before this register
+  existed (bit-for-bit identical cycle count per transaction, confirmed
+  in `test/tb_qspi_clkdiv.v`).
+- `QSPI_CTRL = 2'd1`: SCK = `clk`/8.
+- `QSPI_CTRL = 2'd2`: SCK = `clk`/32.
+- `QSPI_CTRL = 2'd3` (reset default): SCK = `clk`/128 -- the slowest,
+  reset-safe setting, matching AgilA8's own reset default. Left here
+  by the boot ROM, which never touches `QSPI_CTRL` itself, exactly
+  like `FLASH_MODE`/`FLASH_PAGE`/`PSRAM_BANK` -- it's there for
+  whatever gets bootloaded (or runs from flash) to speed up once it's
+  confirmed safe to do so.
+
+`QSPI_CTRL` is sampled once per external transaction, at the moment
+the engine accepts a new request, and latched for that transaction's
+whole duration -- a write to `QSPI_CTRL` while a transfer is already
+in flight can never corrupt it partway through; it only takes effect
+starting with the *next* transaction. Confirmed both at the engine
+level directly and through `mem.v`'s register in `test/tb_qspi_clkdiv.v`.
 
 #### Timer / PWM
 

@@ -100,7 +100,12 @@ module tb_check;
         //      counter should still run (fallback path). ----
         slave_enabled = 0;
         reset_dut();
-        for (cyc = 0; cyc < 3000; cyc = cyc + 1) begin
+        // 15000 cycles: comfortably past the self-test's own SPI
+        // transactions, which now run at QSPI_CTRL's reset default
+        // (2'd3, slowest/sys_clk-128 -- see mem.v's header) rather
+        // than the engine's old fixed always-fastest speed. Measured
+        // ~10340 cycles for the self-test to resolve at that default.
+        for (cyc = 0; cyc < 15000; cyc = cyc + 1) begin
             @(posedge clk);
             if (uo_out != 0) cyc = 100000; // break
         end
@@ -112,7 +117,7 @@ module tb_check;
         // ---- Scenario 2: slave attached -> self-test should pass. ----
         slave_enabled = 1;
         reset_dut();
-        for (cyc = 0; cyc < 3000; cyc = cyc + 1) begin
+        for (cyc = 0; cyc < 15000; cyc = cyc + 1) begin // see scenario1's comment
             @(posedge clk);
             if (uo_out != 0) cyc = 100000;
         end
@@ -144,8 +149,9 @@ module tb_check;
         // Program: addi x1,x0,5 ; addi x2,x0,7 ; add x3,x1,x2 ; sw x3,0xF0(x0) ; jal x0,0 (spin)
         slave_enabled = 1;
         reset_dut();
-        // wait past self-test, then assert START and stream length+program
-        repeat (200) @(posedge clk);
+        // wait past self-test (see scenario1's comment on the budget),
+        // then assert START and stream length+program
+        repeat (15000) @(posedge clk);
         ui_in[2] = 1; // START
         repeat (20) @(posedge clk);
         send_byte(8'd20); // length: 5 instructions * 4 bytes = 20
@@ -172,7 +178,7 @@ module tb_check;
     end
 
     initial begin
-        #5000000;
+        #10000000;
         $display("TIMEOUT: simulation did not finish in time");
         $finish;
     end

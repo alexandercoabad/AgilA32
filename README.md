@@ -92,6 +92,17 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
       chip still boots something useful instead of blinking forever
       -- see `test/tb_boot_timeout.v` and docs/info.md's "Boot-timeout
       flash fallback" section
+- [x] **Variable SPI clock divider**, ported from AgilA8's `SPI_CTRL`
+      clock-divider field: `QSPI_CTRL` (`0xFB`) gates the shared QSPI
+      engine's actual SCK rate (`clk`/2, `/8`, `/32`, `/128`), reset
+      default is the slowest setting (matching AgilA8's own reset-safe
+      default), sampled once per transaction so a mid-flight write
+      can't corrupt a transfer already in progress -- `2'd0`
+      reproduces the engine's original fixed-fast timing exactly, so
+      nothing downstream needs to change to keep running as fast as
+      before, it just isn't the default anymore -- see
+      `test/tb_qspi_clkdiv.v` and docs/info.md's "Variable SPI clock
+      divider" section
 - [x] **Bank-switched flash execution**: a bootloaded 1-instruction
       stub can hand off into external flash (`FLASH_MODE`), and
       `FLASH_PAGE` lets a running program page through a flash image
@@ -111,9 +122,9 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
       tiles, 53.8% routing utilization, 12,548 cells (excluding
       fill/tap), clean DRC/precheck (15/15 checks) and gate-level tests
       (11/11) -- see `.github/workflows/gds.yaml` run history
-- [x] Fourteen test suites (see "Testing locally" below): on-chip
+- [x] Fifteen test suites (see "Testing locally" below): on-chip
       cocotb regression (self-test, demo counter, full bootload-and-run)
-      plus thirteen standalone Icarus testbenches -- QSPI engine
+      plus fourteen standalone Icarus testbenches -- QSPI engine
       bit-level protocol, external-window integration via direct bus
       driving, full CPU-driven external load/store, self-test/bootload,
       `FLASH_MODE` handoff to external flash, `FLASH_PAGE`
@@ -121,10 +132,11 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
       reader (raw scancodes, then scancode-to-ASCII translation), an
       instruction-encoding check for every opcode
       `tools/asm_pineapple.py` wraps, the Timer/PWM peripheral, the
-      EBREAK-halt behavior, and the boot-timeout flash fallback
-      (`test/tb_timer_pwm.v`, `test/tb_ebreak_halt.v`,
-      `test/tb_boot_timeout.v`) -- all wired into CI, all gating the
-      build, all 11 cocotb tests + all 13 standalone tests currently
+      EBREAK-halt behavior, the boot-timeout flash fallback, and the
+      variable SPI clock divider (`test/tb_timer_pwm.v`,
+      `test/tb_ebreak_halt.v`, `test/tb_boot_timeout.v`,
+      `test/tb_qspi_clkdiv.v`) -- all wired into CI, all gating the
+      build, all 11 cocotb tests + all 14 standalone tests currently
       passing
 - [ ] **Step 3, in progress:** a bitmap font + terminal renderer tying
       the PS/2 reader to the ST7789 driver, so keystrokes actually
@@ -176,6 +188,7 @@ test/
   tb_st7789_driver.v      standalone: the real ST7789 driver, byte stream reconstructed and checked
   tb_ps2_reader.v         standalone: raw PS/2 frames -> GPIO_OUT (Step 1)
   tb_ps2_ascii.v          standalone: PS/2 frames -> translated ASCII on GPIO_OUT (Step 2)
+  tb_qspi_clkdiv.v        standalone: QSPI_CTRL clock-divider timing, engine-level and through mem.v
   alu_test_mem.v          minimal flat ROM+RAM harness (not mem.v) used only by tb_alu_test.v
   tb_alu_test.v           standalone: every asm_pineapple.py opcode, run through the real core, checked
                           against hand-computed register values
@@ -201,8 +214,8 @@ external flash are in [docs/info.md](docs/info.md).
 cd test
 pip install -r requirements.txt
 make                    # cocotb: self-test, demo counter, full bootload-and-run
-make standalone-tests   # QSPI engine, external-window, full-CPU, self-test/bootload, FLASH_MODE
-                         # handoff, FLASH_PAGE bank-switching, ST7789 driver, PS/2 reader/ASCII,
+make standalone-tests   # QSPI engine, clock divider, external-window, full-CPU, self-test/bootload,
+                         # FLASH_MODE handoff, FLASH_PAGE bank-switching, ST7789 driver, PS/2 reader/ASCII,
                          # and asm_pineapple.py instruction-encoding tests
 ```
 
