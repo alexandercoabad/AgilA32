@@ -80,6 +80,15 @@ module tb_ebreak_halt;
         rst_n = 0;
         #20 rst_n = 1;
 
+        // top_dut (Part 2, declared below) shares this same rst_n with
+        // Part 1's bare core -- deposit its QSPI_CTRL fast (2'd0) here,
+        // right after the very first reset, so top_dut's boot-ROM self-
+        // test resolves quickly during Part 1 (well before
+        // bootload_and_check is ever called) instead of at the new slow
+        // reset default, which this test isn't exercising. Same
+        // technique this file already uses below for PIN_MUX.
+        top_dut.u_mem.qspi_div_sel = 2'd0;
+
         // halted must be low immediately out of reset, before the core
         // has had any chance to fetch anything.
         if (halted !== 1'b0) begin
@@ -139,6 +148,10 @@ module tb_ebreak_halt;
             $display("PASS test6: rst_n clears halted (core leaves ST_HALTED on reset)");
         end
         rst_n = 1;
+        // Second reset -- re-deposit QSPI_CTRL fast for top_dut (its
+        // own reset block reverts qspi_div_sel to the slow default on
+        // every rst_n deassertion, same as any other reset register).
+        top_dut.u_mem.qspi_div_sel = 2'd0;
 
         $display("PART1: %0d error(s)", errors);
 
