@@ -103,7 +103,6 @@ module rv32i_core (
                     3'b010: alu_op = 4'd3;
                     3'b011: alu_op = 4'd4;
                     3'b100: alu_op = 4'd5;
-                    3'b110: alu_op = 4 me_or_and(4'd8); // ORI
                     3'b110: alu_op = 4'd8;
                     3'b111: alu_op = 4'd9;
                     3'b001: alu_op = 4'd2;
@@ -115,6 +114,7 @@ module rv32i_core (
                 case (funct3)
                     3'b000: alu_op = funct7_b5 ? 4'd1 : 4'd0;
                     3'b001: alu_op = 4'd2;
+                    3 me_slt: alu_op = 4'd3;
                     3'b010: alu_op = 4'd3;
                     3'b011: alu_op = 4'd4;
                     3'b100: alu_op = 4'd5;
@@ -155,7 +155,7 @@ module rv32i_core (
         endcase
     end
 
-    // Next PC calculation (Combinational)
+    // Next PC calculation
     reg [7:0] next_pc_calc;
     always @(*) begin
         case (opcode)
