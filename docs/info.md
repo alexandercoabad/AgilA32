@@ -9,19 +9,41 @@ You can also include images in this folder and reference them in the markdown. E
 
 ## How it works
 
-This is a minimal, from-scratch 32-bit RISC-V (RV32I) CPU, inspired by
-[Pineapple ONE](https://pineapple-one.github.io/) -- a RISC-V computer
-originally built entirely out of discrete 7400-series logic chips
-(no FPGA, no microcontroller). This project keeps that "just basic logic"
-spirit but reimplements the CPU as synthesizable Verilog sized to fit a
-single Tiny Tapeout tile.
+This is a minimal, from-scratch 32-bit RISC-V (RV32I) CPU. Originally
+inspired by [Pineapple ONE](https://pineapple-one.github.io/) -- a
+RISC-V computer built entirely out of discrete 7400-series logic chips
+(no FPGA, no microcontroller) -- the "just basic logic" idea of a
+minimal, from-scratch RISC-V core is where this whole line of projects
+started.
 
-Several design patterns here -- the shared QSPI engine driving both
-flash and PSRAM off one state machine, the GPIO bootloader protocol,
-bank-switched flash execution -- are adapted from
-[AgilA8](https://github.com/alexandercoabad/AgilA8_IHP), an earlier
-Tiny Tapeout project by the same author, rather than invented from
-scratch for this one.
+Structurally and feature-wise, though, this project is the direct
+successor to [AgilA8](https://github.com/alexandercoabad/AgilA8_IHP)
+-- my own earlier Tiny Tapeout project. Both are mine, and both belong
+to the same "AgilA" line: *Agila* is Tagalog/Filipino for "eagle," and
+the "A8" named that first core's 8-bit custom ISA. AgilA32 swaps that
+"A8" for "A32" for exactly the reason it looks like: this is the
+32-bit RV32I successor to that 8-bit core, built under the same
+one-Tiny-Tapeout-tile constraint AgilA8 already had to fit.
+
+Most of what makes this project more than "just an RV32I core" is
+ported from AgilA8 rather than designed fresh:
+
+- the shared QSPI engine driving flash + PSRAM (and now a generic SPI
+  peripheral on CS2) off one state machine
+- the GPIO bootloader protocol
+- bank-switched flash execution
+- the Timer/PWM peripheral -- register layout ported near-verbatim
+  from AgilA8's `a8_peripherals.v`
+- the generic SPI peripheral (`SPI_DATA`, `0xFD`) -- ported from
+  AgilA8's `spi_ctrl.v`/CS2 front-end
+
+The RV32I core itself -- the actual instruction set implementation --
+is written fresh for this project (RV32I is a public, open
+instruction-set standard, not something owned by either AgilA8 or
+Pineapple ONE); it's the surrounding system this project needed to
+actually be useful -- boot, memory-mapped I/O, external storage,
+peripherals -- that carries AgilA8's design forward, widened from 8
+bits to 32.
 
 It implements the full RV32I base integer instruction set (LUI, AUIPC,
 JAL, JALR, all branches, all loads/stores, and all register-register /
