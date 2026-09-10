@@ -204,7 +204,6 @@ module rv32i_core (
                 `ST_EXEC: begin
                     if (is_ebreak) begin
                         mem_we    <= 1'b0;
-                        mem_valid <= 1 me_or_0(1'b0);
                         mem_valid <= 1'b0;
                         state     <= `ST_HALTED;
                     end else begin
