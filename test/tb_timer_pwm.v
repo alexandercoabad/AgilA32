@@ -36,7 +36,7 @@ module tb_timer_pwm;
     wire        ready;
     wire [31:0] rdata;
     wire        pwm_out;
-    wire        pin_mux_out;
+    wire [1:0]  pin_mux_out;
 
     integer errors = 0;
     integer errors2 = 0;
@@ -253,14 +253,14 @@ module tb_timer_pwm;
         // led_out[7]).
         // =============================================================
 
-        // Sanity: PIN_MUX defaults to 0 at reset, so uo_out[7] follows
-        // LED_OUT[7] (0, since the boot ROM hasn't driven LEDs yet)
-        // regardless of whatever pwm_out happens to read.
-        if (top_dut.pin_mux !== 1'b0) begin
+        // Sanity: PIN_MUX defaults to 2'b00 at reset, so uo_out[7]
+        // follows LED_OUT[7] (0, since the boot ROM hasn't driven LEDs
+        // yet) regardless of whatever pwm_out happens to read.
+        if (top_dut.pin_mux !== 2'b00) begin
             errors2 = errors2 + 1;
-            $display("FAIL test9: PIN_MUX read %0d at reset, expected 0 (LED_OUT selected)", top_dut.pin_mux);
+            $display("FAIL test9: PIN_MUX read %0d at reset, expected 00 (LED_OUT selected)", top_dut.pin_mux);
         end else begin
-            $display("PASS test9: PIN_MUX defaults to 0 (uo_out[7] = LED_OUT[7]) at reset");
+            $display("PASS test9: PIN_MUX defaults to 00 (uo_out[7] = LED_OUT[7]) at reset");
         end
 
         // Directly deposit into the peripheral's own internal PWM
@@ -278,18 +278,49 @@ module tb_timer_pwm;
         @(posedge clk); #1;
         if (uo_out2[7] !== led7_before) begin
             errors2 = errors2 + 1;
-            $display("FAIL test10: uo_out[7]=%0d with PIN_MUX=0 and pwm_out=1, expected %0d (LED_OUT[7] still selected)", uo_out2[7], led7_before);
+            $display("FAIL test10: uo_out[7]=%0d with PIN_MUX=00 and pwm_out=1, expected %0d (LED_OUT[7] still selected)", uo_out2[7], led7_before);
         end else begin
-            $display("PASS test10: uo_out[7] ignores pwm_out while PIN_MUX=0 (still shows LED_OUT[7]=%0d)", led7_before);
+            $display("PASS test10: uo_out[7] ignores pwm_out while PIN_MUX=00 (still shows LED_OUT[7]=%0d)", led7_before);
         end
 
-        top_dut.u_mem.pin_mux = 1'b1;
+        top_dut.u_mem.pin_mux = 2'b01;
         @(posedge clk); #1;
         if (uo_out2[7] !== 1'b1) begin
             errors2 = errors2 + 1;
-            $display("FAIL test11: uo_out[7]=%0d with PIN_MUX=1 and pwm_out=1, expected 1", uo_out2[7]);
+            $display("FAIL test11: uo_out[7]=%0d with PIN_MUX=01 and pwm_out=1, expected 1", uo_out2[7]);
         end else begin
-            $display("PASS test11: uo_out[7] follows pwm_out once PIN_MUX=1");
+            $display("PASS test11: uo_out[7] follows pwm_out once PIN_MUX=01");
+        end
+
+        // -----------------------------------------------------------
+        // Test 12: PIN_MUX=2'b10 selects the core's `halted` status
+        // instead. The core hasn't executed EBREAK here, so halted
+        // should read 0 and uo_out[7] should follow it (not pwm_out,
+        // even though pwm_out is still driven high from test 11).
+        // -----------------------------------------------------------
+        top_dut.u_mem.pin_mux = 2'b10;
+        @(posedge clk); #1;
+        if (top_dut.halted !== 1'b0) begin
+            errors2 = errors2 + 1;
+            $display("FAIL test12: top_dut.halted=%0d before any EBREAK, expected 0", top_dut.halted);
+        end else if (uo_out2[7] !== 1'b0) begin
+            errors2 = errors2 + 1;
+            $display("FAIL test12: uo_out[7]=%0d with PIN_MUX=10 and halted=0, expected 0 (ignoring pwm_out=1)", uo_out2[7]);
+        end else begin
+            $display("PASS test12: uo_out[7] follows halted (=0) once PIN_MUX=10, ignoring pwm_out");
+        end
+
+        // -----------------------------------------------------------
+        // Test 13: reserved PIN_MUX=2'b11 falls back to LED_OUT[7],
+        // same as 2'b00.
+        // -----------------------------------------------------------
+        top_dut.u_mem.pin_mux = 2'b11;
+        @(posedge clk); #1;
+        if (uo_out2[7] !== top_dut.led_out[7]) begin
+            errors2 = errors2 + 1;
+            $display("FAIL test13: uo_out[7]=%0d with reserved PIN_MUX=11, expected LED_OUT[7]=%0d fallback", uo_out2[7], top_dut.led_out[7]);
+        end else begin
+            $display("PASS test13: reserved PIN_MUX=11 falls back to LED_OUT[7]");
         end
 
         $display("PART2: %0d error(s)", errors2);

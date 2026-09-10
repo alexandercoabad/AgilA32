@@ -19,9 +19,12 @@
 //              on the stock Pmod, CS2 is already wired to this second
 //              PSRAM chip.)
 //
-// uo_out[7] is muxed between LED_OUT[7] (default) and the Timer/PWM
-// peripheral's PWM waveform, selected by PIN_MUX (0xFA) -- see mem.v's
-// header. uo_out[6:0] always shows LED_OUT[6:0].
+// uo_out[7] is muxed three ways by PIN_MUX (0xFA, bits[1:0]) -- see
+// mem.v's header: 00 = LED_OUT[7] (default), 01 = the Timer/PWM
+// peripheral's PWM waveform, 10 = the core's `halted` status (ported
+// from AgilA8's GPIO_DIR[7] halted-status mux; goes high once EBREAK
+// parks the core in ST_HALTED -- see rv32i_core.v). uo_out[6:0] always
+// shows LED_OUT[6:0].
 //
 // `ena` is ignored (always active) per TT convention for simple designs.
 
@@ -48,7 +51,8 @@ module tt_um_agila32 (
     wire [7:0]  led_out;
 
     wire        qspi_cs0, qspi_cs1, qspi_cs2, qspi_sck, qspi_mosi, qspi_miso;
-    wire        pwm_out, pin_mux;
+    wire        pwm_out, halted;
+    wire [1:0]  pin_mux;
 
     rv32i_core u_core (
         .clk       (clk),
@@ -59,7 +63,8 @@ module tt_um_agila32 (
         .mem_we    (mem_we),
         .mem_valid (mem_valid),
         .mem_ready (mem_ready),
-        .mem_rdata (mem_rdata)
+        .mem_rdata (mem_rdata),
+        .halted    (halted)
     );
 
     mem u_mem (
@@ -84,7 +89,14 @@ module tt_um_agila32 (
         .pin_mux_out(pin_mux)
     );
 
-    assign uo_out = {pin_mux ? pwm_out : led_out[7], led_out[6:0]};
+    // PIN_MUX select for uo_out[7]: 2'b01 = PWM, 2'b10 = halted status,
+    // anything else (2'b00 default, or reserved 2'b11) falls back to
+    // LED_OUT[7].
+    wire uo7_mux = (pin_mux == 2'b01) ? pwm_out :
+                   (pin_mux == 2'b10) ? halted  :
+                                        led_out[7];
+
+    assign uo_out = {uo7_mux, led_out[6:0]};
 
     // uio[2] (MISO) is the only bidirectional pin actually used as an
     // input; everything else this project drives is an output.

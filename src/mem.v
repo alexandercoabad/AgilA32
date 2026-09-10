@@ -79,11 +79,18 @@
 //   0xF9        : PWM_CTRL  (memory-mapped, read/write, resets to 0) --
 //                   bit0 = enable. Bits [7:1] unused, read as 0.
 //   0xFA        : PIN_MUX   (memory-mapped, read/write, resets to 0) --
-//                   bit0 selects what drives uo_out[7]: 0 = LED_OUT[7]
-//                   (the reset default -- matches every revision before
-//                   PWM existed), 1 = the PWM waveform instead. uo_out
+//                   bits[1:0] select what drives uo_out[7]: 2'b00 =
+//                   LED_OUT[7] (the reset default -- matches every
+//                   revision before PWM existed), 2'b01 = the PWM
+//                   waveform, 2'b10 = the core's `halted` status
+//                   (high for as long as the core is parked after an
+//                   EBREAK -- see rv32i_core.v), ported from AgilA8's
+//                   GPIO_DIR[7] halted-status mux. 2'b11 is reserved
+//                   and currently falls back to LED_OUT[7]. uo_out
 //                   [6:0] always shows LED_OUT[6:0] regardless. Bits
-//                   [7:1] unused, read as 0.
+//                   [7:2] unused, read as 0. Existing code that only
+//                   ever wrote 0 or 1 here keeps working unchanged --
+//                   those values still mean LED and PWM respectively.
 //   0xF8        : FLASH_MODE (memory-mapped, write-only, write-any-value-
 //                   to-set -- see "Reprogrammability" below)
 //   0xFC        : FLASH_PAGE (memory-mapped, read/write, resets to 0) --
@@ -179,10 +186,12 @@ module mem #(
     input  wire        qspi_miso,
 
     // Timer/PWM peripherals, ported from AgilA8's a8_peripherals.v --
-    // see header above for the register map. pwm_out/pin_mux are muxed
-    // onto uo_out[7] by the top level, gated by PIN_MUX (0xFA).
+    // see header above for the register map. pwm_out/pin_mux_out are
+    // muxed onto uo_out[7] by the top level (along with the core's
+    // `halted` signal, wired directly core-to-top), gated by PIN_MUX
+    // (0xFA).
     output wire        pwm_out,
-    output wire        pin_mux_out
+    output wire [1:0]  pin_mux_out
 );
 
     // ---------------------------------------------------------------
@@ -327,7 +336,7 @@ module mem #(
     reg [7:0]  pwm_counter;
     reg [7:0]  pwm_duty;
     reg        pwm_enable;
-    reg        pin_mux;    // 0 = uo_out[7]=LED_OUT[7], 1 = uo_out[7]=pwm_out
+    reg [1:0]  pin_mux;    // 00=LED_OUT[7], 01=pwm_out, 10=halted, 11=reserved(LED)
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -355,7 +364,7 @@ module mem #(
             pwm_counter <= 8'h00;
             pwm_duty    <= 8'h00;
             pwm_enable  <= 1'b0;
-            pin_mux     <= 1'b0;
+            pin_mux     <= 2'b00;
         end else begin
             pwm_counter <= pwm_counter + 8'd1;
 
@@ -364,7 +373,7 @@ module mem #(
             if (valid && we && addr == 8'hF9)
                 pwm_enable <= wdata[0];
             if (valid && we && addr == 8'hFA)
-                pin_mux <= wdata[0];
+                pin_mux <= wdata[1:0];
         end
     end
 
@@ -517,7 +526,7 @@ module mem #(
         end else if (addr == 8'hF9) begin
             rdata = {31'b0, pwm_enable};
         end else if (addr == 8'hFA) begin
-            rdata = {31'b0, pin_mux};
+            rdata = {30'b0, pin_mux};
         end else if (addr == 8'hFC) begin
             rdata = {24'b0, flash_page};
         end else begin

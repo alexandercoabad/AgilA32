@@ -27,6 +27,7 @@ OPC = dict(
     OP_IMM=0b0010011, OP_REG=0b0110011, OP_LOAD=0b0000011,
     OP_STORE=0b0100011, OP_BRANCH=0b1100011, OP_JAL=0b1101111,
     OP_JALR=0b1100111, OP_LUI=0b0110111, OP_AUIPC=0b0010111,
+    OP_SYSTEM=0b1110011,
 )
 
 
@@ -131,6 +132,13 @@ class Asm:
     def BGE(self, rs1, rs2, target):  self._branch(0b101, rs1, rs2, target)
     def BLTU(self, rs1, rs2, target): self._branch(0b110, rs1, rs2, target)
     def BGEU(self, rs1, rs2, target): self._branch(0b111, rs1, rs2, target)
+
+    def EBREAK(self):
+        # imm[11:0]=0x001, rs1=0, funct3=0, rd=0, opcode=OP_SYSTEM --
+        # halts the core (rv32i_core.v parks in ST_HALTED until reset).
+        # ECALL (imm=0x000) is deliberately not wrapped here since the
+        # core still treats it as a NOP, not a halt.
+        self.emit(self._i(0x001, 0, 0b000, 0, OPC['OP_SYSTEM']))
 
     def JAL(self, rd, target):
         self.emit(None, fixup=('jal', rd, target))

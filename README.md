@@ -67,10 +67,18 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
       16-bit timer with enable/reset/overflow-flag registers
       (`TIMER_LO`/`TIMER_HI`/`TIMER_CTRL`/`TIMER_FLAG` at `0xF2`/
       `0xF3`/`0xF5`/`0xF6`) and an 8-bit free-running PWM generator
-      (`PWM_DUTY`/`PWM_CTRL` at `0xF7`/`0xF9`), with `PIN_MUX` (`0xFA`)
-      selecting whether `uo_out[7]` shows the PWM waveform or
-      `LED_OUT[7]` as before -- see `test/tb_timer_pwm.v` and
-      docs/info.md's "Timer / PWM" section
+      (`PWM_DUTY`/`PWM_CTRL` at `0xF7`/`0xF9`), with the 2-bit
+      `PIN_MUX` (`0xFA`) selecting whether `uo_out[7]` shows
+      `LED_OUT[7]` (default), the PWM waveform, or the core's halted
+      status -- see `test/tb_timer_pwm.v` and docs/info.md's
+      "Timer / PWM" section
+- [x] **EBREAK halts the core**, ported from AgilA8's `a8_core.v`
+      `S_HALTED`/`halted` pattern: executing `EBREAK` parks the FSM in
+      a new `ST_HALTED` state (no further fetches or memory activity)
+      until the next reset, and the `halted` output it drives is what
+      `PIN_MUX = 2'b10` exposes on `uo_out[7]` -- see
+      `test/tb_ebreak_halt.v` and docs/info.md's "EBREAK halts the
+      core" section
 - [x] **Reprogrammable at runtime, no reflash/retapeout needed**: the
       boot ROM listens indefinitely for a bootload request over
       `ui_in[0:2]` (DATA/CLOCK/START) and runs whatever program it
@@ -96,18 +104,20 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
       tiles, 53.8% routing utilization, 12,548 cells (excluding
       fill/tap), clean DRC/precheck (15/15 checks) and gate-level tests
       (11/11) -- see `.github/workflows/gds.yaml` run history
-- [x] Eleven test suites (see "Testing locally" below): on-chip cocotb
-      regression (self-test, demo counter, full bootload-and-run) plus
-      ten standalone Icarus testbenches -- QSPI engine bit-level
-      protocol, external-window integration via direct bus driving,
-      full CPU-driven external load/store, self-test/bootload,
+- [x] Thirteen test suites (see "Testing locally" below): on-chip
+      cocotb regression (self-test, demo counter, full bootload-and-run)
+      plus twelve standalone Icarus testbenches -- QSPI engine
+      bit-level protocol, external-window integration via direct bus
+      driving, full CPU-driven external load/store, self-test/bootload,
       `FLASH_MODE` handoff to external flash, `FLASH_PAGE`
       bank-switched flash execution, the ST7789 LCD driver, the PS/2
-      reader (raw scancodes, then scancode-to-ASCII translation), and
-      an instruction-encoding check for every opcode
-      `tools/asm_pineapple.py` wraps -- all wired into CI, all gating
-      the build, all 11 cocotb tests + all 10 standalone tests
-      currently passing
+      reader (raw scancodes, then scancode-to-ASCII translation), an
+      instruction-encoding check for every opcode
+      `tools/asm_pineapple.py` wraps, the Timer/PWM peripheral, and
+      the EBREAK-halt behavior (`test/tb_timer_pwm.v`,
+      `test/tb_ebreak_halt.v`) -- all wired into CI, all gating the
+      build, all 11 cocotb tests + all 12 standalone tests currently
+      passing
 - [ ] **Step 3, in progress:** a bitmap font + terminal renderer tying
       the PS/2 reader to the ST7789 driver, so keystrokes actually
       appear on screen -- the biggest piece yet; no interrupts on this

@@ -1,7 +1,14 @@
 // rv32i_core.v -- minimal multi-cycle RV32I core for Tiny Tapeout
 //
-// Implements the full RV32I base integer ISA except FENCE/ECALL/EBREAK,
-// which decode but act as NOPs (no trap support in this version).
+// Implements the full RV32I base integer ISA. FENCE/ECALL still decode
+// as NOPs (no trap support in this version), but EBREAK now actually
+// halts the core: it parks the FSM in ST_HALTED (no further fetches,
+// no memory activity) until the next reset, and a `halted` output goes
+// high for as long as the core stays there. This mirrors AgilA8's
+// a8_core.v S_HALTED state/`halted` output -- ported here as a genuine
+// EBREAK trap rather than AgilA8's dedicated HALT opcode, since this
+// core doesn't have a spare opcode to dedicate the way AgilA8's 16
+// -instruction encoding did.
 //
 // Multi-cycle FSM: FETCH -> FETCH_WAIT -> DECODE -> EXEC -> MEM ->
 // MEM_WAIT -> WB -> FETCH. Every instruction now takes 7 clock cycles
@@ -31,7 +38,13 @@ module rv32i_core (
                                    // transaction is outstanding, so on-chip
                                    // accesses see exactly the same 1-cycle
                                    // response as before)
-    input  wire [31:0] mem_rdata
+    input  wire [31:0] mem_rdata,
+
+    // High for as long as the core is parked in ST_HALTED (reached only
+    // via EBREAK -- see header above). Ported from AgilA8's `halted`
+    // signal; consumed by the top level to drive PIN_MUX's halted-status
+    // output mode (see mem.v's PIN_MUX register).
+    output wire        halted
 );
 
     reg [2:0]  state;
@@ -60,6 +73,16 @@ module rv32i_core (
     // UNUSEDSIGNAL warning on the other 6.
     wire funct7_b5 = ir[30];
     wire [6:0] opcode = ir[6:0];
+
+    // EBREAK = OP_SYSTEM, funct3=000, imm[11:0]=0x001 (rd/rs1 both 0 per
+    // spec, but not checked here -- any OP_SYSTEM word with this exact
+    // funct3/imm12 halts, matching how real EBREAK decoders work).
+    // ECALL (imm12=0x000) and FENCE (a different opcode entirely) still
+    // fall through to the default NOP behavior below.
+    wire is_ebreak = (opcode == `OP_SYSTEM) && (funct3 == 3'b000) &&
+                      (ir[31:20] == 12'h001);
+
+    assign halted = (state == `ST_HALTED);
 
     wire [31:0] rs1_val = (rs1 == 5'd0) ? 32'h0 : regs[rs1];
     wire [31:0] rs2_val = (rs2 == 5'd0) ? 32'h0 : regs[rs2];
@@ -204,14 +227,22 @@ module rv32i_core (
                 end
 
                 `ST_EXEC: begin
-                    alu_result <= alu_y;
-                    case (opcode)
-                        `OP_JAL:    next_pc <= pc + imm_j;
-                        `OP_JALR:   next_pc <= (rs1_val[7:0] + imm_i[7:0]) & 8'hFE;
-                        `OP_BRANCH: next_pc <= branch_cond ? (pc + imm_b) : (pc + 8'd4);
-                        default:    next_pc <= pc + 8'd4;
-                    endcase
-                    state <= `ST_MEM;
+                    if (is_ebreak) begin
+                        // Park here for good -- no memory access, no
+                        // writeback, no further fetches until rst_n.
+                        mem_we    <= 1'b0;
+                        mem_valid <= 1'b0;
+                        state     <= `ST_HALTED;
+                    end else begin
+                        alu_result <= alu_y;
+                        case (opcode)
+                            `OP_JAL:    next_pc <= pc + imm_j;
+                            `OP_JALR:   next_pc <= (rs1_val[7:0] + imm_i[7:0]) & 8'hFE;
+                            `OP_BRANCH: next_pc <= branch_cond ? (pc + imm_b) : (pc + 8'd4);
+                            default:    next_pc <= pc + 8'd4;
+                        endcase
+                        state <= `ST_MEM;
+                    end
                 end
 
                 `ST_MEM: begin
@@ -271,6 +302,15 @@ module rv32i_core (
                     end
                     pc    <= next_pc;
                     state <= `ST_FETCH;
+                end
+
+                `ST_HALTED: begin
+                    // Stay halted until reset -- matches AgilA8's
+                    // S_HALTED behavior. No memory activity, no state
+                    // exit other than rst_n.
+                    mem_valid <= 1'b0;
+                    mem_we    <= 1'b0;
+                    state     <= `ST_HALTED;
                 end
 
                 default: state <= `ST_FETCH;

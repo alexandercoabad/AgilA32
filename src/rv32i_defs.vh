@@ -14,7 +14,8 @@
 `define OP_STORE   7'b0100011
 `define OP_IMM     7'b0010011
 `define OP_REG     7'b0110011
-`define OP_SYSTEM  7'b1110011  // treated as NOP in this core (no traps yet)
+`define OP_SYSTEM  7'b1110011  // ECALL/FENCE still NOP; EBREAK halts -- see
+                                // ST_HALTED below and rv32i_core.v's EXEC stage
 
 // FSM states
 `define ST_FETCH      3'd0
@@ -24,5 +25,8 @@
 `define ST_MEM        3'd3
 `define ST_MEM_WAIT   3'd6   // holds while mem_ready is low (external load/store)
 `define ST_WB         3'd4
+`define ST_HALTED     3'd7   // EBREAK landed here; stays until rst_n -- see
+                              // rv32i_core.v's `halted` output, ported from
+                              // AgilA8's a8_core.v S_HALTED/`halted` pattern
 
 `endif

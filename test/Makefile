@@ -75,4 +75,6 @@ standalone-tests:
 	vvp /tmp/tt_tb_alu_test.vvp | tee /tmp/tt_out_alu_test.log
 	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_timer_pwm.vvp $(SRC_DIR)/tt_um_agila32.v $(SRC_DIR)/rv32i_core.v $(SRC_DIR)/mem.v $(SRC_DIR)/qspi_shared_engine.v tb_timer_pwm.v
 	vvp /tmp/tt_tb_timer_pwm.vvp | tee /tmp/tt_out_timer_pwm.log
+	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_ebreak_halt.vvp $(SRC_DIR)/tt_um_agila32.v $(SRC_DIR)/rv32i_core.v $(SRC_DIR)/mem.v $(SRC_DIR)/qspi_shared_engine.v spi_ram_model.v tb_ebreak_halt.v
+	vvp /tmp/tt_tb_ebreak_halt.vvp | tee /tmp/tt_out_ebreak_halt.log
 	@! grep -l "FAIL" /tmp/tt_out_*.log

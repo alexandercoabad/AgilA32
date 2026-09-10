@@ -34,17 +34,18 @@ This will generate `tb.vcd` instead of `tb.fst`.
 
 ## Additional standalone testbenches
 
-Eleven extra testbenches cover the QSPI external-memory addition, the
+Twelve extra testbenches cover the QSPI external-memory addition, the
 reprogrammable boot ROM (self-test + demo/listen loop + bootloader),
 the FLASH_MODE handoff to external flash, FLASH_PAGE bank-switched
 flash execution, a real ST7789 LCD driver built on top of it, a PS/2
 keyboard reader (raw scancodes, then scancode-to-ASCII translation)
 built the same way, a standalone ALU/instruction-encoding check for
-`tools/asm_pineapple.py` itself, and the Timer/PWM peripheral (counter
+`tools/asm_pineapple.py` itself, the Timer/PWM peripheral (counter
 enable/reset/overflow, PWM duty cycle at 0x00/0x80/0xFF, and the
-PIN_MUX wiring onto uo_out[7]). They're plain Icarus testbenches, not
-cocotb, so they don't run as part of `make` above -- run them together
-with:
+PIN_MUX wiring onto uo_out[7]), and the EBREAK-halts-the-core behavior
+(FSM parks in ST_HALTED, `halted` output, and PIN_MUX's halted-status
+mode). They're plain Icarus testbenches, not cocotb, so they don't run
+as part of `make` above -- run them together with:
 
 ```sh
 make standalone-tests
@@ -127,9 +128,21 @@ iverilog -g2012 -I ../src -o /tmp/tb10.vvp ../src/rv32i_core.v alu_test_mem.v tb
 # overflow flag on 0xFFFF->0x0000 wraparound, clear-on-any-write), the
 # 8-bit free-running PWM generator at duty 0x00/0x80/0xFF and with
 # PWM_CTRL disabled, then confirms against the real tt_um_agila32 top
-# level that PIN_MUX actually selects between LED_OUT[7] and the PWM
-# waveform on uo_out[7]
+# level that the 2-bit PIN_MUX actually selects between LED_OUT[7],
+# the PWM waveform, the halted status, and (reserved) LED_OUT[7] again
+# on uo_out[7]
 iverilog -g2012 -I ../src -o /tmp/tb11.vvp ../src/tt_um_agila32.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v tb_timer_pwm.v && vvp /tmp/tb11.vvp
+
+# EBREAK-halts-the-core, ported from AgilA8's a8_core.v S_HALTED/
+# `halted` pattern: Part 1 drives rv32i_core directly against a tiny
+# 4-instruction hand-built ROM (two ADDIs, an EBREAK, then a trailing
+# ADDI that must never execute) and confirms `halted` goes high
+# exactly on EBREAK, stays high indefinitely with no further memory
+# activity, and clears on reset. Part 2 bootloads the identical
+# program into the real tt_um_agila32 top level over the GPIO
+# DATA/CLOCK/START protocol and confirms PIN_MUX=2'b10 surfaces the
+# real bootloaded-and-halted core's status on uo_out[7]
+iverilog -g2012 -I ../src -o /tmp/tb12.vvp ../src/tt_um_agila32.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_ebreak_halt.v && vvp /tmp/tb12.vvp
 ```
 
 None of these has been checked against a real flash/PSRAM chip or a

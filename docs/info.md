@@ -502,15 +502,51 @@ free-running counter idea:
 
 **PIN_MUX** (`0xFA`, read/write, resets to `0`) selects what
 `uo_out[7]` actually shows, since this core (unlike AgilA8, which has
-a spare pin) has already committed all 8 `uo_out` bits to `LED_OUT`:
+a spare pin) has already committed all 8 `uo_out` bits to `LED_OUT`.
+It's a 2-bit field (`[1:0]`), not a single bit:
 
-- `PIN_MUX = 0` (reset default): `uo_out[7]` = `LED_OUT[7]` -- matches
-  every revision before the Timer/PWM peripheral existed, so a program
-  that never touches `PIN_MUX` sees exactly the old behavior,
+- `PIN_MUX = 2'b00` (reset default): `uo_out[7]` = `LED_OUT[7]` --
+  matches every revision before the Timer/PWM peripheral existed, so a
+  program that never touches `PIN_MUX` sees exactly the old behavior,
   including the boot ROM's own self-test-result bit.
-- `PIN_MUX = 1`: `uo_out[7]` = the PWM waveform instead.
+- `PIN_MUX = 2'b01`: `uo_out[7]` = the PWM waveform instead.
+- `PIN_MUX = 2'b10`: `uo_out[7]` = the core's `halted` status -- high
+  for as long as the core is parked in `ST_HALTED` after executing
+  `EBREAK` (see "EBREAK halts the core" below). Ported from AgilA8's
+  `GPIO_DIR[7]` halted-status mux (`a8_core.v`'s `S_HALTED`/`halted`),
+  adapted to a 2-bit `PIN_MUX` field instead of a dedicated direction
+  bit, since `PIN_MUX` already existed here and a third mode was
+  cheaper than a second register.
+- `PIN_MUX = 2'b11`: reserved, currently falls back to `LED_OUT[7]`
+  (same as `2'b00`).
+
+Existing code that only ever wrote `0` or `1` to this register keeps
+working unchanged -- those values still select LED and PWM
+respectively, since they occupy the low bit the same way the old
+1-bit field did.
 
 `uo_out[6:0]` always shows `LED_OUT[6:0]` regardless of `PIN_MUX` --
 only bit 7 is muxed. See `test/tb_timer_pwm.v` for a standalone
 testbench covering the counter, overflow flag, duty-cycle waveform,
-and `PIN_MUX` wiring end to end.
+and `PIN_MUX` wiring end to end (including the halted-status and
+reserved modes), and `test/tb_ebreak_halt.v` for the `EBREAK`/halt
+behavior itself.
+
+#### EBREAK halts the core
+
+`FENCE` and `ECALL` still decode as NOPs, same as every earlier
+revision (no trap support). `EBREAK`, however, now actually halts the
+core: on executing it, the FSM parks in a new `ST_HALTED` state --- no
+further instruction fetches, no memory activity -- until the next
+`rst_n`. The `halted` output stays high for the entire time the core
+sits there (not a one-cycle pulse), and is what `PIN_MUX = 2'b10`
+above exposes on `uo_out[7]`.
+
+This is a direct port of AgilA8's `a8_core.v` `S_HALTED` state, with
+one difference: AgilA8's 16-instruction encoding had a spare opcode to
+dedicate to a real `HALT` instruction, while this core doesn't have
+room to spare in the standard RV32I encoding, so `EBREAK` (opcode
+`SYSTEM`, `funct3=000`, `imm[11:0]=0x001`) is repurposed as the halt
+trigger instead -- close to EBREAK's usual "stop and hand control to a
+debugger" role in real RISC-V, just without an actual debugger on the
+other end. `tools/asm_pineapple.py`'s `Asm.EBREAK()` emits it.
