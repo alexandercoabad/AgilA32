@@ -68,17 +68,10 @@ module rv32i_core (
     wire [4:0] rs1   = ir[19:15];
     wire [4:0] rs2   = ir[24:20];
     wire [2:0] funct3 = ir[14:12];
-    // Only bit 5 of funct7 (ADD/SUB, SRL/SRA disambiguation) is ever
-    // used, so extract just that bit rather than all 7 -- avoids an
-    // UNUSEDSIGNAL warning on the other 6.
     wire funct7_b5 = ir[30];
     wire [6:0] opcode = ir[6:0];
 
-    // EBREAK = OP_SYSTEM, funct3=000, imm[11:0]=0x001 (rd/rs1 both 0 per
-    // spec, but not checked here -- any OP_SYSTEM word with this exact
-    // funct3/imm12 halts, matching how real EBREAK decoders work).
-    // ECALL (imm12=0x000) and FENCE (a different opcode entirely) still
-    // fall through to the default NOP behavior below.
+    // EBREAK detection
     wire is_ebreak = (opcode == `OP_SYSTEM) && (funct3 == 3'b000) &&
                       (ir[31:20] == 12'h001);
 
@@ -93,13 +86,6 @@ module rv32i_core (
     wire [31:0] imm_i = {{20{ir[31]}}, ir[31:20]};
     wire [31:0] imm_s = {{20{ir[31]}}, ir[31:25], ir[11:7]};
     wire [31:0] imm_u = {ir[31:12], 12'b0};
-    // imm_b/imm_j only ever get used through their low 8 bits (PC is
-    // 8-bit here), so build just those 8 bits directly instead of the
-    // full 32-bit sign-extended immediate -- avoids an UNUSEDSIGNAL
-    // warning on bits[31:8], which were computed but never read.
-    // Equivalent to the standard B-type imm[7:0] = {imm[10:5][2:0],
-    // imm[4:1], 1'b0} and J-type imm[7:0] = {imm[10:1][7:1], 1'b0}
-    // slices of the full RISC-V immediates.
     wire [7:0] imm_b = {ir[27], ir[26], ir[25], ir[11], ir[10], ir[9], ir[8], 1'b0};
     wire [7:0] imm_j = {ir[27], ir[26], ir[25], ir[24], ir[23], ir[22], ir[21], 1'b0};
 
@@ -177,7 +163,7 @@ module rv32i_core (
             `OP_BRANCH: begin
                 alu_a = rs1_val;
                 alu_b = rs2_val;
-                alu_op = 4'd1; // subtract, used for eq/lt comparisons below
+                alu_op = 4'd1;
             end
             default: begin
                 alu_a = rs1_val;
@@ -187,7 +173,7 @@ module rv32i_core (
         endcase
     end
 
-    // Branch condition evaluation (uses rs1_val/rs2_val directly)
+    // Branch condition evaluation
     reg branch_cond;
     always @(*) begin
         case (funct3)
@@ -238,8 +224,6 @@ module rv32i_core (
 
                 `ST_EXEC: begin
                     if (is_ebreak) begin
-                        // Park here for good -- no memory access, no
-                        // writeback, no further fetches until rst_n.
                         mem_we    <= 1'b0;
                         mem_valid <= 1'b0;
                         state     <= `ST_HALTED;
@@ -258,14 +242,14 @@ module rv32i_core (
                 `ST_MEM: begin
                     case (opcode)
                         `OP_LOAD: begin
-                            mem_addr <= alu_y[7:0];
+                            mem_addr <= alu_result[7:0];
                             mem_we   <= 1'b0;
                             mem_size <= (funct3[1:0] == 2'b00) ? 2'd0 :
                                         (funct3[1:0] == 2'b01) ? 2'd1 : 2'd2;
                             mem_valid<= 1'b1;
                         end
                         `OP_STORE: begin
-                            mem_addr  <= alu_y[7:0];
+                            mem_addr  <= alu_result[7:0];
                             mem_wdata <= rs2_val;
                             mem_we    <= 1'b1;
                             mem_size  <= (funct3[1:0] == 2'b00) ? 2'd0 :
@@ -274,7 +258,7 @@ module rv32i_core (
                         end
                         default: begin
                             mem_we    <= 1'b0;
-                            mem_valid <= 1'b0;  // no real access this instruction
+                            mem_valid <= 1'b0;
                         end
                     endcase
                     state <= `ST_MEM_WAIT;
@@ -283,7 +267,7 @@ module rv32i_core (
                 `ST_MEM_WAIT: begin
                     if (mem_ready) begin
                         mem_valid <= 1'b0;
-                        mem_we    <= 1'b0;
+                        mem_we    <= 1 me_we; // retain write enable during handshake
                         state     <= `ST_WB;
                     end
                 end
@@ -307,7 +291,7 @@ module rv32i_core (
                                 endcase
                             end
                             `OP_IMM, `OP_REG: regs[rd] <= alu_result;
-                            default: ; // BRANCH/STORE/SYSTEM don't write rd
+                            default: ;
                         endcase
                     end
                     pc    <= next_pc;
@@ -315,9 +299,6 @@ module rv32i_core (
                 end
 
                 `ST_HALTED: begin
-                    // Stay halted until reset -- matches AgilA8's
-                    // S_HALTED behavior. No memory activity, no state
-                    // exit other than rst_n.
                     mem_valid <= 1'b0;
                     mem_we    <= 1'b0;
                     state     <= `ST_HALTED;
