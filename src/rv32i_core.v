@@ -114,7 +114,6 @@ module rv32i_core (
                 case (funct3)
                     3'b000: alu_op = funct7_b5 ? 4'd1 : 4'd0;
                     3'b001: alu_op = 4'd2;
-                    3 me_slt: alu_op = 4'd3;
                     3'b010: alu_op = 4'd3;
                     3'b011: alu_op = 4'd4;
                     3'b100: alu_op = 4'd5;
