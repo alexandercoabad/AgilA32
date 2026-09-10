@@ -19,13 +19,18 @@ This boot ROM does three things, in order, every power-on/reset:
      from here on -- so uo_out[7] tells you at a glance whether the
      QSPI Pmod is actually attached, without disturbing the demo
      counter in uo_out[3:0].
-  2. DEMO / WAIT_START: loops forever incrementing a 4-bit counter
-     into uo_out[3:0] (same visible behavior as the original plain
-     counter demo), while polling ui_in[2] (START) every iteration.
-     Unlike AgilA8's bounded-timeout WAIT_START, this poll never
-     gives up on its own -- the chip is always "listening" for a
-     bootload, indefinitely, which is what makes it reprogrammable
-     on demand rather than only at a fixed window after reset.
+  2. DEMO / WAIT_START: loops incrementing a 4-bit counter into
+     uo_out[3:0] (same visible behavior as the original plain counter
+     demo), while polling ui_in[2] (START) every iteration. Ported
+     from AgilA8: this poll is bounded, not indefinite -- the same
+     free-running counter driving the display also serves as a
+     timeout count, and once it exceeds TIMEOUT_SHIFT bits without
+     START going high, the boot ROM gives up waiting, sets FLASH_MODE,
+     and falls into the loaded-program entry point (RAM_BASE), which
+     now resolves to external flash instead of on-chip RAM -- so an
+     unattended board still boots something useful instead of
+     listening forever. A host that wants to bootload still can, at
+     any point before the timeout elapses.
   3. BOOTLOAD: once START is seen, receives a length-prefixed program
      over the same 3-wire handshake protocol AgilA8 uses (all on
      GPIO_IN = 0xF4):
@@ -73,8 +78,10 @@ Registers:
   x7 = bit counter (RECV_BYTE only)
   x8 = self-test status, bit 7 set on failure, else 0 -- persists for
        the life of the program, OR'd into every LED_OUT write
-  x9 = demo counter, kept masked to 4 bits every iteration so it
-       wraps 0..15 without a separate masking step at display time
+  x9 = demo counter AND timeout counter (MAIN_LOOP) -- free-running,
+       never masked in place, so it keeps counting past 15 for as long
+       as MAIN_LOOP keeps looping. x3 holds the masked-to-4-bits
+       display value each iteration instead (see MAIN_LOOP).
 """
 
 RAM_BASE   = 0xB4       # 0xB4-0xDF: on-chip RAM window, loadable via
@@ -91,6 +98,28 @@ GPIO_IN    = 0xF4
 LED_OUT    = 0xF0
 EXT_PSRAM  = 0xE0       # first byte of the external PSRAM window (CS1),
                          # used only for the self-test probe here.
+FLASH_MODE = 0xF8       # write-any-value-to-set; see mem.v. Redirects
+                         # RAM_BASE-and-up to external flash (CS0).
+
+TIMEOUT_SHIFT = 9       # WAIT_START gives up once the free-running x9
+                         # counter's bit[TIMEOUT_SHIFT] (or higher)
+                         # goes set -- see MAIN_LOOP below. ~512
+                         # iterations (~32000 cycles at this loop's
+                         # measured ~63 cycles/iteration) -- chosen to
+                         # clear every existing testbench's own
+                         # ~3000-cycle pre-START settle window with
+                         # >10x margin (see the MAIN_LOOP comment: a
+                         # smaller shift was tried and measured firing
+                         # at ~2772 cycles, UNDER that 3000-cycle
+                         # window, which made the boot ROM abandon
+                         # MAIN_LOOP for flash before some tests ever
+                         # got to assert START -- confirmed as the
+                         # cause of a real tb_flash_paging failure and
+                         # a same-answer-different-reason false pass in
+                         # tb_flash_handoff). Still just a placeholder
+                         # for simulation, like AgilA8's own threshold
+                         # of 31 -- scale up further for real
+                         # deployment (see MAIN_LOOP comment).
 
 DATA_MASK  = 1
 CLOCK_MASK = 2
@@ -143,6 +172,7 @@ class Asm:
     def ANDI(self, rd, rs1, imm): self.emit(self._i(imm, rs1, 0b111, rd, OPC['OP_IMM']))
     def ORI (self, rd, rs1, imm): self.emit(self._i(imm, rs1, 0b110, rd, OPC['OP_IMM']))
     def SLLI(self, rd, rs1, sh):  self.emit(self._i(sh & 0x1F, rs1, 0b001, rd, OPC['OP_IMM']))
+    def SRLI(self, rd, rs1, sh):  self.emit(self._i(sh & 0x1F, rs1, 0b101, rd, OPC['OP_IMM']))
     def LW  (self, rd, rs1, imm): self.emit(self._i(imm, rs1, 0b010, rd, OPC['OP_LOAD']))
     def LBU (self, rd, rs1, imm): self.emit(self._i(imm, rs1, 0b100, rd, OPC['OP_LOAD']))
     def JALR(self, rd, rs1, imm): self.emit(self._i(imm, rs1, 0b000, rd, OPC['OP_JALR']))
@@ -206,30 +236,81 @@ class Asm:
 a = Asm()
 
 # --- SELF-TEST: probe the external PSRAM window ---
+# Assume-pass-then-overwrite-on-fail: x8 is set to 0 unconditionally
+# first, then the BEQ on match jumps straight into MAIN_INIT with that
+# 0 already correct -- no separate SELFTEST_PASS label/instruction and
+# no JAL-around-it needed for the fail path, since the fail path is now
+# just "fall through one more instruction and overwrite x8". Same
+# observable result (x8 = 0x80 on mismatch, 0 on match) as the old
+# branch-to-two-separate-ADDI-paths-plus-JAL version, in 2 fewer
+# instructions. The 0x80 constant is also now a single ADDI: 0x80 fits
+# directly in ADDI's 12-bit signed immediate range (0..2047 for
+# positive values), so the old ADDI x8,0,1 + SLLI x8,x8,7 pair to build
+# it via shifting was never necessary.
 a.label("SELFTEST")
 a.ADDI(2, 0, SELFTEST_PATTERN)
 a.SB  (2, 0, EXT_PSRAM)          # write 0xA5 to ext addr 0
 a.LBU (6, 0, EXT_PSRAM)          # read it back (zero-extended)
-a.BEQ (6, 2, "SELFTEST_PASS")
-a.ADDI(8, 0, 1)
-a.SLLI(8, 8, 7)                  # x8 = 0x80 (fail flag in bit 7)
-a.JAL (0, "MAIN_INIT")
-a.label("SELFTEST_PASS")
-a.ADDI(8, 0, 0)
+a.ADDI(8, 0, 0)                  # assume pass: x8 = 0
+a.BEQ (6, 2, "MAIN_INIT")        # match -> done, x8 already correct
+a.ADDI(8, 0, 0x80)               # mismatch -> overwrite: fail flag (bit 7)
 
 a.label("MAIN_INIT")
-a.ADDI(9, 0, 0)                  # demo counter = 0
+a.ADDI(9, 0, 0)                  # demo counter / timeout counter = 0
 
-# --- DEMO / WAIT_START: count forever, polling START every loop ---
+# --- DEMO / WAIT_START: count with a bounded timeout, polling START
+# every loop. Ported from AgilA8's boot_rom, which gives up on an
+# unbounded wait and falls back to flash after a fixed number of
+# iterations (see build_boot_rom.py's docstring in the AgilA8 tree) --
+# unlike AgilA8, AgilA32 doesn't need a *second* free register for the
+# timeout count: x9 already increments every loop iteration for the
+# visible demo counter, so it doubles as the timeout counter directly.
+# The only change needed is to stop masking x9 itself down to 4 bits
+# in place (which used to throw away the count every 16 iterations) --
+# the mask now lands in scratch x3 instead, purely for the display
+# value, leaving x9 free-running underneath for as long as the loop
+# keeps going.
 a.label("MAIN_LOOP")
 a.LW  (2, 0, GPIO_IN)
 a.ANDI(2, 2, START_MASK)
 a.BNE (2, 0, "START_SEEN")
-a.ADDI(9, 9, 1)
-a.ANDI(9, 9, 0xF)                # wrap 0..15
-a.OR  (2, 8, 9)                  # display = selftest_fail<<7 | counter
+a.ADDI(9, 9, 1)                  # x9 free-running: demo display AND timeout count
+a.ANDI(3, 9, 0xF)                # x3 = x9 & 0xF, display nibble only
+a.OR  (2, 8, 3)                  # display = selftest_fail<<7 | counter
 a.SW  (2, 0, LED_OUT)
-a.JAL (0, "MAIN_LOOP")
+# Timeout test: once x9 reaches TIMEOUT_SHIFT_THRESHOLD bits, x3 (here
+# reused as scratch) goes nonzero and the loop stops re-branching to
+# MAIN_LOOP, falling into the flash-fallback below instead. Testing
+# "any bit at or above TIMEOUT_SHIFT set" via SRLI+BEQ needs no extra
+# threshold register (BLT/BGE would need one, since RISC-V branches
+# only compare two registers, never a register against an immediate) --
+# it's a power-of-two-shaped timeout instead of an exact count, which
+# is a fine trade for a boot-time fallback. TIMEOUT_SHIFT is set above
+# to clear every existing testbench's pre-START settle window (see its
+# own comment for the measured cycle counts behind that choice); real
+# deployment should pick a much larger shift based on the desired
+# wall-clock timeout at this core's actual clock frequency.
+a.SRLI(3, 9, TIMEOUT_SHIFT)
+a.BEQ (3, 0, "MAIN_LOOP")        # x3==0 -> not timed out yet, keep looping
+# Timeout expired: hand the LOAD_BASE window over to external flash
+# and fall into RUN's existing absolute jump to RAM_BASE (patched
+# below) -- RAM_BASE/LOAD_BASE now resolves to flash instead of
+# on-chip RAM (see mem.v's FLASH_MODE mux), so the SAME jump that
+# normally starts a freshly-bootloaded RAM program also correctly
+# starts execution from flash here, at zero extra instruction cost for
+# the jump itself. This is safe to do from boot ROM (unlike from
+# inside the LOAD_BASE window itself -- see
+# tools/build_flash_handoff_stub.py's "why flash byte 0 is dead" note):
+# FLASH_MODE only redirects addresses >= LOAD_BASE, and both this SW
+# and the JAL below execute from ROM addresses (< 0xB0), so neither
+# fetch is affected by the mode switch it just caused. The JAL's
+# target (RAM_BASE, i.e. LOAD_BASE) becomes the FIRST fetch of the
+# newly-redirected range, landing cleanly on flash byte 0 -- not the
+# "byte 0 is unreachable" case that note describes, which only applies
+# when the FLASH_MODE write and the jump are themselves executing
+# sequentially from within the redirected range.
+a.SW  (0, 0, FLASH_MODE)
+a.JAL (0, "RUN")
 
 # --- BOOTLOAD: length-prefixed program over the DATA/CLOCK handshake ---
 a.label("START_SEEN")
@@ -246,9 +327,12 @@ a.ADDI(4, 4, -1)
 a.JAL (0, "BYTE_LOOP")
 
 # RUN itself just needs to land the PC at RAM_BASE -- BEQ x4,x0,RUN above
-# already lands exactly here, so this JAL is never dead code. JAL's
-# immediate is PC-relative, so the absolute-address patch below computes
-# it directly against RUN's own address rather than via another label.
+# already lands exactly here, so this JAL is never dead code, and the
+# MAIN_LOOP timeout path (above) jumps in here too after setting
+# FLASH_MODE, reusing this same absolute jump to reach flash instead of
+# RAM. JAL's immediate is PC-relative, so the absolute-address patch
+# below computes it directly against RUN's own address rather than via
+# another label.
 a.label("RUN")
 a.JAL (0, "RUN")                 # placeholder; patched to an absolute
                                   # jump to RAM_BASE after finalize()
@@ -258,10 +342,16 @@ a.ADDI(6, 0, 0)                  # x6 = 0 (accumulator) -- see module
                                   # docstring for why this must not be skipped
 a.ADDI(7, 0, 0)                  # bit counter
 a.label("BIT_WAIT_HIGH")
-a.LW  (2, 0, GPIO_IN)
-a.ANDI(2, 2, CLOCK_MASK)
-a.BEQ (2, 0, "BIT_WAIT_HIGH")
-a.LW  (2, 0, GPIO_IN)
+a.LW  (2, 0, GPIO_IN)            # x2 = raw GPIO_IN, kept raw (see below)
+a.ANDI(3, 2, CLOCK_MASK)         # test into scratch x3, not in place
+a.BEQ (3, 0, "BIT_WAIT_HIGH")
+# x2 still holds the GPIO_IN word read the instant clock went high --
+# no need for a second LW here to sample DATA, since GPIO_IN can't have
+# changed between the AND above and this AND (no intervening access to
+# it). The old version re-read GPIO_IN into x2 here, which needed x2
+# masked in place above (destroying the raw copy) since it had no
+# spare register free at that point; masking into x3 instead keeps x2
+# available for reuse and removes the redundant read.
 a.ANDI(2, 2, DATA_MASK)
 a.SLLI(6, 6, 1)
 a.BEQ (2, 0, "SKIP_OR")

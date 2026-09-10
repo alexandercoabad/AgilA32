@@ -101,13 +101,16 @@ from `0x00`:
    actually attached and answering.
 2. **Demo / listen loop**: increments a 4-bit counter into
    `uo_out[3:0]` (same visible behavior as a simple blink demo) while
-   polling `ui_in[2]` (START) every iteration, forever. Unlike a
-   bounded post-reset window, the chip is always listening for a
-   bootload request, not just briefly after power-on.
-3. **Bootload**: once START is seen, it bit-bangs in a length-prefixed
-   program over `ui_in[0:2]` and writes it byte-by-byte into the
-   `0xB4-0xDF` RAM window with plain store instructions, then jumps to
-   `0xB4` to run it. See "Reprogrammability" below for the wire format.
+   polling `ui_in[2]` (START) every iteration. The same free-running
+   counter driving that display also serves as a timeout count -- if
+   START never comes, the loop gives up on its own after a bounded
+   number of iterations (see "Boot-timeout flash fallback" below)
+   instead of listening forever.
+3. **Bootload**: once START is seen (before the timeout elapses), it
+   bit-bangs in a length-prefixed program over `ui_in[0:2]` and writes
+   it byte-by-byte into the `0xB4-0xDF` RAM window with plain store
+   instructions, then jumps to `0xB4` to run it. See
+   "Reprogrammability" below for the wire format.
 
 ### Reprogrammability
 
@@ -122,20 +125,41 @@ pins:
 - `ui_in[2]` = START (host asserts high to request a bootload)
 
 Wire format: one length byte (MSB first), then that many program bytes
-(MSB first each). The host can assert START at any point after reset --
-the boot ROM is always listening in its demo loop, not just in a fixed
-window. See `tools/build_boot_rom.py`'s module docstring for the exact
-bit-level protocol and register usage.
+(MSB first each). The host can assert START at any point before the
+boot-timeout fallback below fires. See `tools/build_boot_rom.py`'s
+module docstring for the exact bit-level protocol and register usage.
 
-`FLASH_MODE` (`0xF8`, write-any-value-to-set, sticky until reset) is
-there for a *bootloaded* program to opt into: writing it hands the same
-`0xB4-0xDF` window over to external flash (CS0) instead of on-chip RAM,
-so a chip with a flashed QSPI Pmod attached can be set up (once, by
-something you bootload) to boot straight from flash on every subsequent
-power-cycle, without the host re-pushing anything over the wire.
-Reflashing that chip afterward is a normal SPI flash write, not a new
-tapeout. The boot ROM itself never touches `FLASH_MODE` -- it always
-loads into on-chip RAM.
+`FLASH_MODE` (`0xF8`, write-any-value-to-set, sticky until reset) hands
+the `0xB4-0xDF` window over to external flash (CS0) instead of on-chip
+RAM. Normally this is something a *bootloaded* program opts into --
+writing it lets a chip with a flashed QSPI Pmod attached be set up
+(once, by something you bootload) to boot straight from flash on every
+subsequent power-cycle, without the host re-pushing anything over the
+wire. Reflashing that chip afterward is a normal SPI flash write, not a
+new tapeout. The boot ROM's own bootloader path never touches
+`FLASH_MODE` itself -- it always loads into on-chip RAM. The one
+exception is the timeout fallback below, which is the boot ROM writing
+`FLASH_MODE` itself, not anything bootloaded.
+
+#### Boot-timeout flash fallback
+
+Ported from AgilA8's boot ROM, which gives up on an unbounded wait for
+a bootload and falls back to flash after a fixed number of iterations.
+`ui_in[2]` (START) is polled every pass through the demo/listen loop
+above; the same free-running counter that drives the visible `uo_out
+[3:0]` blink also serves, unmasked, as a timeout count. Once that count
+exceeds a fixed threshold (`TIMEOUT_SHIFT` in `tools/build_boot_rom.py`
+-- currently a placeholder value sized for simulation, not real-world
+wall-clock time) without START having gone high, the boot ROM gives up
+waiting on its own: it writes `FLASH_MODE` itself and falls straight
+into the same jump a completed RAM bootload would use, which now lands
+on external flash (CS0) instead. An unattended chip -- reset with
+nothing driving `ui_in` at all -- ends up running whatever program is
+already sitting in its external flash, rather than blinking forever
+waiting for a host that isn't there. A host that wants to bootload
+instead can still do so at any point before the timeout elapses,
+exactly as described above; nothing about the fallback changes the
+bootload path itself.
 
 #### The FLASH_MODE handoff stub, and why flash byte 0 is dead
 
@@ -403,7 +427,13 @@ this same driver that silently ran off the end of the flash window);
 and `tb_ps2_reader.v` bit-bangs several real 11-bit PS/2 frames at the
 `PagedAsm`-based keyboard reader and confirms `GPIO_OUT` lands on each
 scancode sent, across multiple frames in a row -- see "Reading a PS/2
-keyboard from flash" above.
+keyboard from flash" above; and `tb_boot_timeout.v` covers the
+boot-timeout flash fallback above: Part 1 leaves START low forever and
+confirms the boot ROM eventually sets `FLASH_MODE` on its own and
+starts executing a canary program preloaded into external flash, with
+no bootload ever attempted; Part 2 confirms a host that responds well
+before the timeout still gets a normal RAM bootload, unaffected by the
+new fallback path.
 
 **Known limitation:** the external RAM/flash windows have only been
 validated against the behavioral model in `spi_ram_model.v`, not a real

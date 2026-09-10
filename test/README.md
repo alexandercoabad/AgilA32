@@ -34,12 +34,13 @@ This will generate `tb.vcd` instead of `tb.fst`.
 
 ## Additional standalone testbenches
 
-Twelve extra testbenches cover the QSPI external-memory addition, the
+Thirteen extra testbenches cover the QSPI external-memory addition, the
 reprogrammable boot ROM (self-test + demo/listen loop + bootloader),
-the FLASH_MODE handoff to external flash, FLASH_PAGE bank-switched
-flash execution, a real ST7789 LCD driver built on top of it, a PS/2
-keyboard reader (raw scancodes, then scancode-to-ASCII translation)
-built the same way, a standalone ALU/instruction-encoding check for
+the boot-timeout automatic flash fallback, the FLASH_MODE handoff to
+external flash, FLASH_PAGE bank-switched flash execution, a real
+ST7789 LCD driver built on top of it, a PS/2 keyboard reader (raw
+scancodes, then scancode-to-ASCII translation) built the same way, a
+standalone ALU/instruction-encoding check for
 `tools/asm_pineapple.py` itself, the Timer/PWM peripheral (counter
 enable/reset/overflow, PWM duty cycle at 0x00/0x80/0xFF, and the
 PIN_MUX wiring onto uo_out[7]), and the EBREAK-halts-the-core behavior
@@ -143,6 +144,18 @@ iverilog -g2012 -I ../src -o /tmp/tb11.vvp ../src/tt_um_agila32.v ../src/rv32i_c
 # DATA/CLOCK/START protocol and confirms PIN_MUX=2'b10 surfaces the
 # real bootloaded-and-halted core's status on uo_out[7]
 iverilog -g2012 -I ../src -o /tmp/tb12.vvp ../src/tt_um_agila32.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_ebreak_halt.v && vvp /tmp/tb12.vvp
+
+# Boot-timeout automatic flash fallback, ported from AgilA8's boot_rom:
+# Part 1 leaves ui_in[2] (START) low forever -- no bootload attempted
+# at all -- and confirms flash (CS0) stays untouched through the early
+# part of the wait, FLASH_MODE latches on its own once the boot ROM's
+# free-running demo/timeout counter crosses TIMEOUT_SHIFT, and the
+# unattended chip falls through to run a tiny canary program preloaded
+# into external flash (uo_out=0x2A). Part 2 confirms a host that DOES
+# assert START well before the timeout still gets a completely normal
+# RAM bootload (same 5-instruction program tb_check.v's scenario 3
+# uses), unaffected by the new fallback path.
+iverilog -g2012 -I ../src -o /tmp/tb13.vvp ../src/tt_um_agila32.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_boot_timeout.v && vvp /tmp/tb13.vvp
 ```
 
 None of these has been checked against a real flash/PSRAM chip or a

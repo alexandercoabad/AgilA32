@@ -47,9 +47,10 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 # Standalone (non-cocotb) Icarus testbenches -- cover the QSPI
 # external-memory addition, the reprogrammable boot ROM, the
 # FLASH_MODE handoff, FLASH_PAGE bank-switched flash execution
-# (including the real ST7789 driver), and the Timer/PWM peripheral.
-# See test/README.md's "Additional standalone testbenches" section for
-# what each one does.
+# (including the real ST7789 driver), the Timer/PWM peripheral, the
+# EBREAK/halted-status PIN_MUX mode, and the boot ROM's timeout ->
+# automatic flash fallback. See test/README.md's "Additional
+# standalone testbenches" section for what each one does.
 # ---------------------------------------------------------------------
 .PHONY: standalone-tests
 standalone-tests:
@@ -77,4 +78,6 @@ standalone-tests:
 	vvp /tmp/tt_tb_timer_pwm.vvp | tee /tmp/tt_out_timer_pwm.log
 	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_ebreak_halt.vvp $(SRC_DIR)/tt_um_agila32.v $(SRC_DIR)/rv32i_core.v $(SRC_DIR)/mem.v $(SRC_DIR)/qspi_shared_engine.v spi_ram_model.v tb_ebreak_halt.v
 	vvp /tmp/tt_tb_ebreak_halt.vvp | tee /tmp/tt_out_ebreak_halt.log
+	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_boot_timeout.vvp $(SRC_DIR)/tt_um_agila32.v $(SRC_DIR)/rv32i_core.v $(SRC_DIR)/mem.v $(SRC_DIR)/qspi_shared_engine.v spi_ram_model.v tb_boot_timeout.v
+	vvp /tmp/tt_tb_boot_timeout.vvp | tee /tmp/tt_out_boot_timeout.log
 	@! grep -l "FAIL" /tmp/tt_out_*.log

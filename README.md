@@ -80,11 +80,18 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
       `test/tb_ebreak_halt.v` and docs/info.md's "EBREAK halts the
       core" section
 - [x] **Reprogrammable at runtime, no reflash/retapeout needed**: the
-      boot ROM listens indefinitely for a bootload request over
-      `ui_in[0:2]` (DATA/CLOCK/START) and runs whatever program it
-      receives straight out of on-chip RAM -- see
-      `tools/build_boot_rom.py` and docs/info.md's "Reprogrammability"
-      section
+      boot ROM listens for a bootload request over `ui_in[0:2]`
+      (DATA/CLOCK/START) and runs whatever program it receives
+      straight out of on-chip RAM -- see `tools/build_boot_rom.py` and
+      docs/info.md's "Reprogrammability" section
+- [x] **Boot-timeout flash fallback**, ported from AgilA8's boot_rom:
+      the listen loop above is bounded, not indefinite -- if START
+      never comes, the boot ROM gives up on its own after a fixed
+      number of iterations, sets `FLASH_MODE` itself, and falls into
+      whatever's already sitting in external flash, so an unattended
+      chip still boots something useful instead of blinking forever
+      -- see `test/tb_boot_timeout.v` and docs/info.md's "Boot-timeout
+      flash fallback" section
 - [x] **Bank-switched flash execution**: a bootloaded 1-instruction
       stub can hand off into external flash (`FLASH_MODE`), and
       `FLASH_PAGE` lets a running program page through a flash image
@@ -104,19 +111,20 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
       tiles, 53.8% routing utilization, 12,548 cells (excluding
       fill/tap), clean DRC/precheck (15/15 checks) and gate-level tests
       (11/11) -- see `.github/workflows/gds.yaml` run history
-- [x] Thirteen test suites (see "Testing locally" below): on-chip
+- [x] Fourteen test suites (see "Testing locally" below): on-chip
       cocotb regression (self-test, demo counter, full bootload-and-run)
-      plus twelve standalone Icarus testbenches -- QSPI engine
+      plus thirteen standalone Icarus testbenches -- QSPI engine
       bit-level protocol, external-window integration via direct bus
       driving, full CPU-driven external load/store, self-test/bootload,
       `FLASH_MODE` handoff to external flash, `FLASH_PAGE`
       bank-switched flash execution, the ST7789 LCD driver, the PS/2
       reader (raw scancodes, then scancode-to-ASCII translation), an
       instruction-encoding check for every opcode
-      `tools/asm_pineapple.py` wraps, the Timer/PWM peripheral, and
-      the EBREAK-halt behavior (`test/tb_timer_pwm.v`,
-      `test/tb_ebreak_halt.v`) -- all wired into CI, all gating the
-      build, all 11 cocotb tests + all 12 standalone tests currently
+      `tools/asm_pineapple.py` wraps, the Timer/PWM peripheral, the
+      EBREAK-halt behavior, and the boot-timeout flash fallback
+      (`test/tb_timer_pwm.v`, `test/tb_ebreak_halt.v`,
+      `test/tb_boot_timeout.v`) -- all wired into CI, all gating the
+      build, all 11 cocotb tests + all 13 standalone tests currently
       passing
 - [ ] **Step 3, in progress:** a bitmap font + terminal renderer tying
       the PS/2 reader to the ST7789 driver, so keystrokes actually

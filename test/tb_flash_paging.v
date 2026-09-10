@@ -127,8 +127,22 @@ module tb_flash_paging;
         repeat (3000) @(posedge clk); // past self-test + a few demo-loop iterations
 
         ui_in[2] = 1; // START
+        // Give MAIN_LOOP a full iteration's worth of margin to notice
+        // START and jump away to START_SEEN *before* turning on write
+        // recording. MAIN_LOOP's body got two instructions longer once
+        // the boot-timeout fallback (feature #2) landed (SRLI+BEQ after
+        // every LED_OUT store), so the old 20-cycle gap here -- enough
+        // margin against the pre-timeout loop body, timing-wise -- was
+        // no longer enough to guarantee the in-flight iteration's own
+        // LED_OUT store (queued before START was polled) always retires
+        // ahead of this window: recording could flip on while that
+        // stale write was still in flight, prepending a spurious extra
+        // entry (the demo counter's own value) to the sequence this test
+        // checks byte-for-byte. 100 cycles clears a full MAIN_LOOP
+        // iteration (~63-70 cycles, measured) with margin, so recording
+        // never turns on until the core has actually left MAIN_LOOP.
+        repeat (100) @(posedge clk);
         recording = 1'b1;
-        repeat (20) @(posedge clk);
         send_byte(STUB_LEN);
         for (ci = 0; ci < STUB_LEN; ci = ci + 1) send_byte(stub_bytes[ci]);
 
