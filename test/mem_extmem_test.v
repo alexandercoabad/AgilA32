@@ -157,11 +157,6 @@ module mem_test_ext #(
         .req_addr  (ext_addr),
         .req_wdata (wdata),
         .req_size  (size),
-        .req_div_sel (2'd0),        // fixed fastest -- this test memory has
-                                     // no QSPI_CTRL register of its own;
-                                     // 2'd0 reproduces the engine's original
-                                     // fixed-speed behavior so tb_core_ext.v's
-                                     // cycle-count expectations are unaffected
         .req_rdata (ext_rdata),
         .req_ready (ext_ready),
         .pin_cs0   (qspi_cs0),

@@ -56,8 +56,6 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 standalone-tests:
 	iverilog -g2012 -o /tmp/tt_tb_qspi_engine.vvp $(SRC_DIR)/qspi_shared_engine.v tb_qspi_engine.v
 	vvp /tmp/tt_tb_qspi_engine.vvp | tee /tmp/tt_out_qspi_engine.log
-	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_qspi_clkdiv.vvp $(SRC_DIR)/mem.v $(SRC_DIR)/qspi_shared_engine.v spi_ram_model.v tb_qspi_clkdiv.v
-	vvp /tmp/tt_tb_qspi_clkdiv.vvp | tee /tmp/tt_out_qspi_clkdiv.log
 	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_mem_ext.vvp $(SRC_DIR)/mem.v $(SRC_DIR)/qspi_shared_engine.v spi_ram_model.v tb_mem_ext.v
 	vvp /tmp/tt_tb_mem_ext.vvp | tee /tmp/tt_out_mem_ext.log
 	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_core_ext.vvp $(SRC_DIR)/rv32i_core.v $(SRC_DIR)/qspi_shared_engine.v mem_extmem_test.v spi_ram_model.v tb_core_ext.v

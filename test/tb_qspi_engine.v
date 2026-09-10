@@ -26,11 +26,6 @@ module tb_qspi_engine;
     reg [23:0] req_addr  = 0;
     reg [31:0] req_wdata = 0;
     reg [1:0]  req_size  = 0;
-    reg [1:0]  req_div_sel = 2'd0; // fastest -- this file only checks bit-
-                                    // level protocol/byte-order, not timing,
-                                    // so it stays at the engine's original
-                                    // fixed speed throughout. See
-                                    // tb_qspi_clkdiv.v for divider timing.
     wire [31:0] req_rdata;
     wire        req_ready;
 
@@ -43,7 +38,6 @@ module tb_qspi_engine;
         .clk(clk), .rst_n(rst_n),
         .req_valid(req_valid), .req_we(req_we), .req_dev(req_dev),
         .req_addr(req_addr), .req_wdata(req_wdata), .req_size(req_size),
-        .req_div_sel(req_div_sel),
         .req_rdata(req_rdata), .req_ready(req_ready),
         .pin_cs0(pin_cs0), .pin_cs1(pin_cs1), .pin_cs2(pin_cs2), .pin_sck(pin_sck),
         .pin_mosi(pin_mosi), .pin_miso(pin_miso)

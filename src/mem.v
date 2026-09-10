@@ -93,23 +93,6 @@
 //                   those values still mean LED and PWM respectively.
 //   0xF8        : FLASH_MODE (memory-mapped, write-only, write-any-value-
 //                   to-set -- see "Reprogrammability" below)
-//   0xFB        : QSPI_CTRL  (memory-mapped, read/write, resets to 2'd3) --
-//                   bits[1:0] select the SCK clock divider for
-//                   qspi_shared_engine's flash/PSRAM transactions: 2'd0 =
-//                   sys_clk/2 (fastest -- this engine's original, only-
-//                   ever speed before this register existed), 2'd1 =
-//                   sys_clk/8, 2'd2 = sys_clk/32, 2'd3 = sys_clk/128
-//                   (slowest, the reset default), ported from AgilA8's
-//                   SPI_CTRL clock-divider field. Sampled by the engine
-//                   once per transaction at accept time, so a runtime
-//                   write never corrupts a transfer already in flight --
-//                   see qspi_shared_engine.v's header for the full
-//                   rationale. Bits [7:2] unused, read as 0. The boot
-//                   ROM never touches this register, same as FLASH_MODE/
-//                   FLASH_PAGE/PSRAM_BANK -- it's left at the slow, safe
-//                   reset default for whatever gets bootloaded (or runs
-//                   from flash) to speed up once a real device's timing
-//                   is confirmed safe.
 //   0xFC        : FLASH_PAGE (memory-mapped, read/write, resets to 0) --
 //                   selects which WINDOW_BYTES-sized slice of the flash
 //                   chip's own larger address space the LOAD_BASE window
@@ -339,11 +322,6 @@ module mem #(
     // same way every other byte-wide register here does.
     reg       psram_bank;
 
-    // QSPI_CTRL: plain read/write register, resets to 2'd3 (the
-    // slowest of the four settings, sys_clk/128) -- see "Variable SPI
-    // clock divider" below. Only bits[1:0] are meaningful.
-    reg [1:0] qspi_div_sel;
-
     // ---------------------------------------------------------------
     // Timer + PWM, ported from AgilA8's a8_peripherals.v (same bit
     // layout/behavior, see header above for the register map). Both
@@ -509,7 +487,6 @@ module mem #(
         .req_addr  (ext_addr),
         .req_wdata (wdata),
         .req_size  (size),
-        .req_div_sel (qspi_div_sel),
         .req_rdata (ext_rdata),
         .req_ready (ext_ready),
         .pin_cs0   (qspi_cs0),
@@ -550,8 +527,6 @@ module mem #(
             rdata = {31'b0, pwm_enable};
         end else if (addr == 8'hFA) begin
             rdata = {30'b0, pin_mux};
-        end else if (addr == 8'hFB) begin
-            rdata = {30'b0, qspi_div_sel};
         end else if (addr == 8'hFC) begin
             rdata = {24'b0, flash_page};
         end else begin
@@ -569,8 +544,6 @@ module mem #(
             flash_page <= 8'h00;
             psram_bank <= 1'b0;   // reset default = RAM A, matches every
                                    // pre-CS2 revision's behavior
-            qspi_div_sel <= 2'd3; // reset default = slowest (sys_clk/128),
-                                   // matches AgilA8's own reset-safe default
         end else if (we) begin
             if (in_ram_range && !in_ext_flash) begin
                 case (size)
@@ -595,8 +568,6 @@ module mem #(
                 psram_bank <= wdata[0];   // 0=RAM A(CS1) 1=RAM B(CS2)
             end else if (addr == 8'hF8) begin
                 flash_mode <= 1'b1;   // write-any-value-to-set, sticky until reset
-            end else if (addr == 8'hFB) begin
-                qspi_div_sel <= wdata[1:0];
             end else if (addr == 8'hFC) begin
                 flash_page <= wdata[7:0];   // the written value IS the new page, unlike FLASH_MODE
             end

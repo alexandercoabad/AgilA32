@@ -73,13 +73,6 @@ module tb_ps2_ascii;
             rst_n = 0;
             repeat (10) @(posedge clk);
             rst_n = 1;
-            // QSPI_CTRL resets to the slow default (2'd3) on every rst_n
-            // deassertion; this testbench's fixed cycle budgets predate
-            // that register and assume the engine's original fixed-fast
-            // timing, so deposit req_div_sel=0 right after each reset --
-            // standing in for "hardware whose real SPI timing has already
-            // been confirmed safe" (see CHANGES_feature3.md).
-            dut.u_mem.qspi_div_sel = 2'd0;
         end
     endtask
 
