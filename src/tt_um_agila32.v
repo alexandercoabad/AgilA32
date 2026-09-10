@@ -1,6 +1,6 @@
 // tt_um_agila32.v -- Tiny Tapeout top level
 //
-// Pin mapping (v2, QSPI Pmod added):
+// Pin mapping (v3, CS2/RAM B added):
 //   ui_in[7:0]  -> memory-mapped input register at address 0xF4 (switches)
 //   uo_out[7:0] -> memory-mapped output register at address 0xF0 (LEDs)
 //   uio[0] -> QSPI Pmod CS0  (flash -- backs the 0xB4-0xDF program
@@ -11,8 +11,17 @@
 //   uio[3] -> QSPI Pmod SCK
 //   uio[4] -> held high (SD2, unused in single-line mode)
 //   uio[5] -> held high (SD3, unused in single-line mode)
-//   uio[6] -> QSPI Pmod CS1  (PSRAM "RAM A", backs mem.v's 0xB0-0xEF window)
-//   uio[7] -> unused, left as input
+//   uio[6] -> QSPI Pmod CS1  (PSRAM "RAM A", backs mem.v's 0xE0-0xEF window
+//              by default)
+//   uio[7] -> QSPI Pmod CS2  (PSRAM "RAM B", backs that SAME 0xE0-0xEF
+//              window instead once a program sets PSRAM_BANK (0xF1) --
+//              see mem.v's header. Reachable with no board modification:
+//              on the stock Pmod, CS2 is already wired to this second
+//              PSRAM chip.)
+//
+// uo_out[7] is muxed between LED_OUT[7] (default) and the Timer/PWM
+// peripheral's PWM waveform, selected by PIN_MUX (0xFA) -- see mem.v's
+// header. uo_out[6:0] always shows LED_OUT[6:0].
 //
 // `ena` is ignored (always active) per TT convention for simple designs.
 
@@ -38,7 +47,8 @@ module tt_um_agila32 (
     wire [31:0] mem_rdata;
     wire [7:0]  led_out;
 
-    wire        qspi_cs0, qspi_cs1, qspi_sck, qspi_mosi, qspi_miso;
+    wire        qspi_cs0, qspi_cs1, qspi_cs2, qspi_sck, qspi_mosi, qspi_miso;
+    wire        pwm_out, pin_mux;
 
     rv32i_core u_core (
         .clk       (clk),
@@ -66,18 +76,21 @@ module tt_um_agila32 (
         .gpio_out (led_out),
         .qspi_cs0 (qspi_cs0),
         .qspi_cs1 (qspi_cs1),
+        .qspi_cs2 (qspi_cs2),
         .qspi_sck (qspi_sck),
         .qspi_mosi(qspi_mosi),
-        .qspi_miso(qspi_miso)
+        .qspi_miso(qspi_miso),
+        .pwm_out    (pwm_out),
+        .pin_mux_out(pin_mux)
     );
 
-    assign uo_out  = led_out;
+    assign uo_out = {pin_mux ? pwm_out : led_out[7], led_out[6:0]};
 
     // uio[2] (MISO) is the only bidirectional pin actually used as an
     // input; everything else this project drives is an output.
     assign qspi_miso = uio_in[2];
 
-    assign uio_out = {1'b0,       // uio[7] unused
+    assign uio_out = {qspi_cs2,   // uio[7]
                        qspi_cs1,  // uio[6]
                        1'b1,      // uio[5] SD3, held high (unused)
                        1'b1,      // uio[4] SD2, held high (unused)

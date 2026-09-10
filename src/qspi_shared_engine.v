@@ -1,5 +1,15 @@
 // qspi_shared_engine.v -- minimal single-line SPI master shared between
-// external flash (CS0) and PSRAM (CS1) on the Tiny Tapeout QSPI Pmod.
+// external flash (CS0), PSRAM "RAM A" (CS1), and PSRAM "RAM B" (CS2) on
+// the Tiny Tapeout QSPI Pmod.
+//
+// RAM B uses the exact same 0x03/0x02 command protocol as RAM A -- on
+// the stock QSPI Pmod board, CS2 is already wired directly to a second,
+// populated PSRAM chip (see mole99/qspi-pmod), so unlike AgilA8's CS2
+// (a generic-purpose SPI front-end that needs a board trace cut before
+// it can reach anything other than that chip), no board modification
+// is needed here at all -- RAM B is reachable out of the box, with the
+// same read/write command set RAM A already uses. mem.v picks which of
+// RAM A/RAM B backs its one external PSRAM window via req_dev.
 //
 // Deliberately uses only plain single-line SPI (standard 0x03 READ /
 // 0x02 WRITE commands, 24-bit address), NOT flash's continuous-read
@@ -45,7 +55,8 @@ module qspi_shared_engine (
     // request interface (mem.v side)
     input  wire        req_valid,   // held high for the whole transaction
     input  wire        req_we,      // 0 = read, 1 = write
-    input  wire [1:0]  req_dev,     // 2'd1 = flash (CS0), 2'd2 = psram (CS1)
+    input  wire [1:0]  req_dev,     // 2'd1 = flash (CS0), 2'd2 = psram RAM A (CS1),
+                                     // 2'd3 = psram RAM B (CS2)
     input  wire [23:0] req_addr,    // byte address within the selected device
     input  wire [31:0] req_wdata,
     input  wire [1:0]  req_size,    // 0=byte 1=half 2=word (same as mem.v's `size`)
@@ -55,6 +66,7 @@ module qspi_shared_engine (
     // Pmod pins (subset used in single-line mode)
     output reg         pin_cs0,     // flash CS, active low
     output reg         pin_cs1,     // psram "RAM A" CS, active low
+    output reg         pin_cs2,     // psram "RAM B" CS, active low
     output reg         pin_sck,
     output reg         pin_mosi,    // SD0, engine-driven
     input  wire        pin_miso     // SD1, engine-sampled
@@ -119,6 +131,7 @@ module qspi_shared_engine (
             state     <= ST_IDLE;
             pin_cs0   <= 1'b1;
             pin_cs1   <= 1'b1;
+            pin_cs2   <= 1'b1;
             pin_sck   <= 1'b0;
             pin_mosi  <= 1'b1;
             req_ready <= 1'b0;
@@ -133,6 +146,7 @@ module qspi_shared_engine (
                     if (req_valid) begin
                         pin_cs0 <= (req_dev == 2'd1) ? 1'b0 : 1'b1;
                         pin_cs1 <= (req_dev == 2'd2) ? 1'b0 : 1'b1;
+                        pin_cs2 <= (req_dev == 2'd3) ? 1'b0 : 1'b1;
 
                         data_bits   <= (req_size == 2'd0) ? 6'd8  :
                                        (req_size == 2'd1) ? 6'd16 : 6'd32;
@@ -177,6 +191,7 @@ module qspi_shared_engine (
                 ST_DONE: begin
                     pin_cs0 <= 1'b1;
                     pin_cs1 <= 1'b1;
+                    pin_cs2 <= 1'b1;
                     pin_sck <= 1'b0;
                     // Low `data_bits` bits of sreg = data phase content, in
                     // address order (first byte transferred ends up most

@@ -22,7 +22,15 @@ module tb_mem_ext;
     wire        ready;
     wire [31:0] rdata;
 
-    wire qspi_cs0, qspi_cs1, qspi_sck, qspi_mosi, qspi_miso;
+    wire qspi_cs0, qspi_cs1, qspi_cs2, qspi_sck, qspi_mosi, qspi_miso_a, qspi_miso_b;
+
+    // Two independent behavioral PSRAM models, one per chip select --
+    // MISO is only driven by whichever model currently has its own
+    // cs_n asserted low (spi_ram_model tri-states miso otherwise, same
+    // as a real chip would), so ORing/muxing isn't needed: whichever
+    // one is deselected simply doesn't drive the shared line.
+    wire qspi_miso = qspi_cs1 == 1'b0 ? qspi_miso_a :
+                      qspi_cs2 == 1'b0 ? qspi_miso_b : 1'bz;
 
     integer errors = 0;
     integer wait_cycles;
@@ -32,15 +40,22 @@ module tb_mem_ext;
         .addr(addr), .wdata(wdata), .size(size), .we(we),
         .valid(valid), .ready(ready), .rdata(rdata),
         .gpio_in(8'h00), .gpio_out(),
-        .qspi_cs0(qspi_cs0), .qspi_cs1(qspi_cs1), .qspi_sck(qspi_sck),
+        .qspi_cs0(qspi_cs0), .qspi_cs1(qspi_cs1), .qspi_cs2(qspi_cs2), .qspi_sck(qspi_sck),
         .qspi_mosi(qspi_mosi), .qspi_miso(qspi_miso)
     );
 
-    spi_ram_model ram (
+    spi_ram_model ram_a (
         .cs_n(qspi_cs1),
         .sck(qspi_sck),
         .mosi(qspi_mosi),
-        .miso(qspi_miso)
+        .miso(qspi_miso_a)
+    );
+
+    spi_ram_model ram_b (
+        .cs_n(qspi_cs2),
+        .sck(qspi_sck),
+        .mosi(qspi_mosi),
+        .miso(qspi_miso_b)
     );
 
     // Drives one access exactly the way rv32i_core's FSM does: set the
@@ -139,6 +154,58 @@ module tb_mem_ext;
             $display("FAIL test5: on-chip RAM read back %h, expected 11223344", rdata);
         end else begin
             $display("PASS test5: on-chip RAM still works correctly alongside the external window");
+        end
+
+        // -----------------------------------------------------------
+        // Test 6: PSRAM_BANK (0xF1) resets to 0 (RAM A) -- confirms
+        // the default matches every pre-CS2 revision's behavior, i.e.
+        // 0xE0-0xEF still reaches RAM A (test2/3's value) without a
+        // program ever having to touch PSRAM_BANK.
+        // -----------------------------------------------------------
+        do_access(8'hF1, 32'h0, 2'd0, 1'b0);
+        if (rdata[0] !== 1'b0) begin
+            errors = errors + 1;
+            $display("FAIL test6: PSRAM_BANK read back %0d, expected 0 (RAM A) on reset", rdata[0]);
+        end else begin
+            $display("PASS test6: PSRAM_BANK resets to 0 (RAM A)");
+        end
+
+        // -----------------------------------------------------------
+        // Test 7: switch PSRAM_BANK to 1 (RAM B) and write/read-back
+        // through the SAME 0xE0-0xEF window -- confirms CS2 reaches a
+        // genuinely separate chip (ram_b), not the same memory RAM A
+        // (ram_a) already has CAFEBABE/A5 sitting in from tests 2-4.
+        // -----------------------------------------------------------
+        do_access(8'hF1, 32'h1, 2'd0, 1'b1);
+        do_access(8'hE0, 32'h0, 2'd2, 1'b0); // RAM B is freshly zeroed, unlike RAM A
+        if (rdata !== 32'h0) begin
+            errors = errors + 1;
+            $display("FAIL test7a: RAM B pre-write read %h, expected 0 (separate chip from RAM A)", rdata);
+        end else begin
+            $display("PASS test7a: RAM B is a genuinely separate chip from RAM A (reads back 0, not CAFEBABE)");
+        end
+
+        do_access(8'hE0, 32'h13572468, 2'd2, 1'b1);
+        do_access(8'hE0, 32'h0, 2'd2, 1'b0);
+        if (rdata !== 32'h13572468) begin
+            errors = errors + 1;
+            $display("FAIL test7b: RAM B read back %h, expected 13572468", rdata);
+        end else begin
+            $display("PASS test7b: RAM B write-then-read round trip through mem.v works");
+        end
+
+        // -----------------------------------------------------------
+        // Test 8: switch PSRAM_BANK back to 0 (RAM A) and confirm RAM
+        // A's own earlier data (test2/3's CAFEBABE) is still intact --
+        // i.e. banking doesn't disturb either chip's actual contents.
+        // -----------------------------------------------------------
+        do_access(8'hF1, 32'h0, 2'd0, 1'b1);
+        do_access(8'hE0, 32'h0, 2'd2, 1'b0);
+        if (rdata !== 32'hCAFEBABE) begin
+            errors = errors + 1;
+            $display("FAIL test8: RAM A read back %h after switching banks, expected CAFEBABE still intact", rdata);
+        end else begin
+            $display("PASS test8: switching PSRAM_BANK back to RAM A preserves its earlier contents");
         end
 
         #20;

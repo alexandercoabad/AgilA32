@@ -26,19 +26,64 @@
 //                                 dropped (real NOR flash can't be
 //                                 written with a plain 0x02 command the
 //                                 way PSRAM can).
-//   0xE0 - 0xEF : RAM (16 bytes) -- external PSRAM ("RAM A" / CS1) on the
-//                   Tiny Tapeout QSPI Pmod, via qspi_shared_engine. Reads/
-//                   writes here take multiple clock cycles (the core
-//                   stalls on `ready` until the SPI transaction
-//                   completes) instead of the single-cycle response
-//                   everything else on this bus gets. This is also what
-//                   the boot ROM's own power-on self-test probes (write
-//                   0xA5, read back, compare) to light uo_out[7] when no
-//                   Pmod is attached. Unaffected by FLASH_MODE -- always
-//                   PSRAM.
+//   0xE0 - 0xEF : RAM (16 bytes) -- external PSRAM on the Tiny Tapeout
+//                   QSPI Pmod, via qspi_shared_engine. Backed by chip
+//                   "RAM A" (CS1) by default, or chip "RAM B" (CS2)
+//                   instead once PSRAM_BANK (0xF1) is set -- only one
+//                   chip is reachable at a time through this one
+//                   16-byte window, same idea as FLASH_MODE picking
+//                   which chip backs the 0xB4-0xDF window. Reads/writes
+//                   here take multiple clock cycles (the core stalls on
+//                   `ready` until the SPI transaction completes)
+//                   instead of the single-cycle response everything
+//                   else on this bus gets. This is also what the boot
+//                   ROM's own power-on self-test probes (write 0xA5,
+//                   read back, compare) to light uo_out[7] when no Pmod
+//                   is attached -- the self-test runs before any
+//                   program has touched PSRAM_BANK, so it always probes
+//                   RAM A. Unaffected by FLASH_MODE -- always PSRAM.
 //   0xF0        : LED_OUT   (memory-mapped, write-only, drives uo_out)
+//   0xF1        : PSRAM_BANK (memory-mapped, read/write, resets to 0) --
+//                   bit 0 selects which PSRAM chip the 0xE0-0xEF window
+//                   above is backed by: 0 = RAM A (CS1, the reset
+//                   default -- matches every previous revision's
+//                   behavior), 1 = RAM B (CS2). RAM B uses the exact
+//                   same 0x03 READ / 0x02 WRITE command protocol as RAM
+//                   A; on the stock Tiny Tapeout QSPI Pmod, CS2 is
+//                   already wired to a second, populated PSRAM chip, so
+//                   no board modification is needed to reach it (unlike
+//                   AgilA8's CS2, which is a generic-purpose SPI
+//                   front-end and needs a trace cut on the Pmod before
+//                   it can reach anything other than that same chip).
+//                   Bits [7:1] are unused/reserved, read as 0.
 //   0xF4        : SW_IN     (memory-mapped, read-only, reflects ui_in --
 //                   also the bootloader's DATA/CLOCK/START input)
+//   0xF2        : TIMER_LO  (memory-mapped, read-only) -- low byte of a
+//                   free-running 16-bit counter, ported from AgilA8's
+//                   a8_peripherals.v (same bit layout/behavior).
+//   0xF3        : TIMER_HI  (memory-mapped, read-only) -- high byte of
+//                   the same counter.
+//   0xF5        : TIMER_CTRL (memory-mapped, read/write, resets to 0) --
+//                   bit0 = enable (counts up once per clock while set),
+//                   bit1 = write-1-to-reset the counter to 0 (write-only,
+//                   always reads back 0). Bits [7:2] unused, read as 0.
+//   0xF6        : TIMER_FLAG (memory-mapped, read/write, resets to 0) --
+//                   bit0 = overflow (sticky, set when the counter wraps
+//                   0xFFFF -> 0x0000); any write to this address clears
+//                   it, regardless of the written value (matches
+//                   AgilA8's TIMER_FLAG). Bits [7:1] unused, read as 0.
+//   0xF7        : PWM_DUTY  (memory-mapped, read/write, resets to 0) --
+//                   8-bit duty cycle out of a free-running 256-cycle
+//                   period; 0xFF is special-cased always-on, same as
+//                   AgilA8's PWM_DUTY.
+//   0xF9        : PWM_CTRL  (memory-mapped, read/write, resets to 0) --
+//                   bit0 = enable. Bits [7:1] unused, read as 0.
+//   0xFA        : PIN_MUX   (memory-mapped, read/write, resets to 0) --
+//                   bit0 selects what drives uo_out[7]: 0 = LED_OUT[7]
+//                   (the reset default -- matches every revision before
+//                   PWM existed), 1 = the PWM waveform instead. uo_out
+//                   [6:0] always shows LED_OUT[6:0] regardless. Bits
+//                   [7:1] unused, read as 0.
 //   0xF8        : FLASH_MODE (memory-mapped, write-only, write-any-value-
 //                   to-set -- see "Reprogrammability" below)
 //   0xFC        : FLASH_PAGE (memory-mapped, read/write, resets to 0) --
@@ -121,13 +166,23 @@ module mem #(
     output reg  [7:0]  gpio_out,   // uo_out, mapped at 0xF0
 
     // Tiny Tapeout QSPI Pmod pins (single-line mode). CS0/flash backs
-    // the FLASH_MODE-redirected 0xB4-0xDF window; CS1/psram backs the
-    // 0xE0-0xEF window (and is what the boot ROM's self-test probes).
+    // the FLASH_MODE-redirected 0xB4-0xDF window; CS1/psram (RAM A)
+    // backs the 0xE0-0xEF window by default (and is what the boot
+    // ROM's self-test probes); CS2/psram (RAM B) backs that SAME
+    // 0xE0-0xEF window instead, whenever PSRAM_BANK (0xF1) is set --
+    // see PSRAM_BANK below.
     output wire        qspi_cs0,   // flash CS
-    output wire        qspi_cs1,   // psram CS
+    output wire        qspi_cs1,   // psram "RAM A" CS
+    output wire        qspi_cs2,   // psram "RAM B" CS
     output wire        qspi_sck,
     output wire        qspi_mosi,
-    input  wire        qspi_miso
+    input  wire        qspi_miso,
+
+    // Timer/PWM peripherals, ported from AgilA8's a8_peripherals.v --
+    // see header above for the register map. pwm_out/pin_mux are muxed
+    // onto uo_out[7] by the top level, gated by PIN_MUX (0xFA).
+    output wire        pwm_out,
+    output wire        pin_mux_out
 );
 
     // ---------------------------------------------------------------
@@ -252,6 +307,71 @@ module mem #(
     reg       flash_mode;
     reg [7:0] flash_page;
 
+    // PSRAM_BANK: plain read/write register, resets to 0 (RAM A) -- see
+    // header. Only bit 0 is meaningful; kept as a full byte register
+    // (rather than a bare 1-bit reg) so the read path can return it the
+    // same way every other byte-wide register here does.
+    reg       psram_bank;
+
+    // ---------------------------------------------------------------
+    // Timer + PWM, ported from AgilA8's a8_peripherals.v (same bit
+    // layout/behavior, see header above for the register map). Both
+    // are plain free-running counters with no interaction with the
+    // ext-memory/`ready` machinery -- they're read/written the same
+    // single-cycle way FLASH_MODE/FLASH_PAGE/PSRAM_BANK already are.
+    // ---------------------------------------------------------------
+    reg [15:0] timer_cnt;
+    reg        timer_enable;
+    reg        timer_overflow;
+
+    reg [7:0]  pwm_counter;
+    reg [7:0]  pwm_duty;
+    reg        pwm_enable;
+    reg        pin_mux;    // 0 = uo_out[7]=LED_OUT[7], 1 = uo_out[7]=pwm_out
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            timer_cnt      <= 16'h0000;
+            timer_enable   <= 1'b0;
+            timer_overflow <= 1'b0;
+        end else begin
+            if (valid && we && addr == 8'hF5) begin
+                timer_enable <= wdata[0];
+                if (wdata[1])
+                    timer_cnt <= 16'h0000;
+            end else if (timer_enable) begin
+                timer_cnt <= timer_cnt + 16'd1;
+                if (timer_cnt == 16'hFFFF)
+                    timer_overflow <= 1'b1;
+            end
+
+            if (valid && we && addr == 8'hF6)
+                timer_overflow <= 1'b0;   // write-any-value-to-clear
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pwm_counter <= 8'h00;
+            pwm_duty    <= 8'h00;
+            pwm_enable  <= 1'b0;
+            pin_mux     <= 1'b0;
+        end else begin
+            pwm_counter <= pwm_counter + 8'd1;
+
+            if (valid && we && addr == 8'hF7)
+                pwm_duty <= wdata[7:0];
+            if (valid && we && addr == 8'hF9)
+                pwm_enable <= wdata[0];
+            if (valid && we && addr == 8'hFA)
+                pin_mux <= wdata[0];
+        end
+    end
+
+    assign pwm_out = pwm_enable &&
+                      ((pwm_duty == 8'hFF) || (pwm_counter < pwm_duty));
+    assign pin_mux_out = pin_mux;
+
     wire in_rom        = (addr < ROM_BYTES);
     wire in_ram_range  = (addr >= RAM_BASE) && (addr < (RAM_BASE + RAM_BYTES));
     wire in_load_range = (addr >= LOAD_BASE) && (addr < (RAM_BASE + RAM_BYTES));
@@ -286,7 +406,11 @@ module mem #(
     wire in_ext_psram = (addr >= EXT_PSRAM_BASE) && (addr < (EXT_PSRAM_BASE + EXT_PSRAM_BYTES));
     wire in_ext       = in_ext_flash || in_ext_psram;
 
-    wire [1:0]  req_dev  = in_ext_flash ? 2'd1 : 2'd2;               // 1=flash(CS0) 2=psram(CS1)
+    // 1=flash(CS0) 2=psram RAM A(CS1) 3=psram RAM B(CS2) -- PSRAM_BANK
+    // picks between the last two; flash always wins the mux since
+    // in_ext_flash and in_ext_psram are mutually exclusive by address
+    // range (see in_ram/in_ext_flash above).
+    wire [1:0]  req_dev  = in_ext_flash ? 2'd1 : (psram_bank ? 2'd3 : 2'd2);
 
     // ---------------------------------------------------------------
     // Bank-switched flash execution
@@ -358,6 +482,7 @@ module mem #(
         .req_ready (ext_ready),
         .pin_cs0   (qspi_cs0),
         .pin_cs1   (qspi_cs1),
+        .pin_cs2   (qspi_cs2),
         .pin_sck   (qspi_sck),
         .pin_mosi  (qspi_mosi),
         .pin_miso  (qspi_miso)
@@ -375,8 +500,24 @@ module mem #(
             rdata = ext_rdata; // only meaningful once `ready` has pulsed -- see header
         end else if (addr == 8'hF0) begin
             rdata = {24'b0, gpio_out};
+        end else if (addr == 8'hF1) begin
+            rdata = {31'b0, psram_bank};
+        end else if (addr == 8'hF2) begin
+            rdata = {24'b0, timer_cnt[7:0]};
+        end else if (addr == 8'hF3) begin
+            rdata = {24'b0, timer_cnt[15:8]};
         end else if (addr == 8'hF4) begin
             rdata = {24'b0, gpio_in};
+        end else if (addr == 8'hF5) begin
+            rdata = {30'b0, 1'b0, timer_enable};
+        end else if (addr == 8'hF6) begin
+            rdata = {31'b0, timer_overflow};
+        end else if (addr == 8'hF7) begin
+            rdata = {24'b0, pwm_duty};
+        end else if (addr == 8'hF9) begin
+            rdata = {31'b0, pwm_enable};
+        end else if (addr == 8'hFA) begin
+            rdata = {31'b0, pin_mux};
         end else if (addr == 8'hFC) begin
             rdata = {24'b0, flash_page};
         end else begin
@@ -392,6 +533,8 @@ module mem #(
             gpio_out   <= 8'h00;
             flash_mode <= 1'b0;
             flash_page <= 8'h00;
+            psram_bank <= 1'b0;   // reset default = RAM A, matches every
+                                   // pre-CS2 revision's behavior
         end else if (we) begin
             if (in_ram_range && !in_ext_flash) begin
                 case (size)
@@ -412,6 +555,8 @@ module mem #(
                 endcase
             end else if (addr == 8'hF0) begin
                 gpio_out <= wdata[7:0];
+            end else if (addr == 8'hF1) begin
+                psram_bank <= wdata[0];   // 0=RAM A(CS1) 1=RAM B(CS2)
             end else if (addr == 8'hF8) begin
                 flash_mode <= 1'b1;   // write-any-value-to-set, sticky until reset
             end else if (addr == 8'hFC) begin

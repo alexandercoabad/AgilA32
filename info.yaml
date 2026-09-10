@@ -43,7 +43,7 @@ pinout:
   uo[4]: "LED4"
   uo[5]: "LED5"
   uo[6]: "LED6"
-  uo[7]: "LED7"
+  uo[7]: "LED7 / PWM (selected by PIN_MUX, 0xFA)"
 
   # Bidirectional pins
   uio[0]: "qspi_cs0"
@@ -53,7 +53,7 @@ pinout:
   uio[4]: ""
   uio[5]: ""
   uio[6]: "qspi_cs1"
-  uio[7]: ""
+  uio[7]: "qspi_cs2"
 
 # Do not change!
 yaml_version: 6

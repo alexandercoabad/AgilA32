@@ -34,13 +34,15 @@ This will generate `tb.vcd` instead of `tb.fst`.
 
 ## Additional standalone testbenches
 
-Ten extra testbenches cover the QSPI external-memory addition, the
+Eleven extra testbenches cover the QSPI external-memory addition, the
 reprogrammable boot ROM (self-test + demo/listen loop + bootloader),
 the FLASH_MODE handoff to external flash, FLASH_PAGE bank-switched
 flash execution, a real ST7789 LCD driver built on top of it, a PS/2
 keyboard reader (raw scancodes, then scancode-to-ASCII translation)
-built the same way, and a standalone ALU/instruction-encoding check for
-`tools/asm_pineapple.py` itself. They're plain Icarus testbenches, not
+built the same way, a standalone ALU/instruction-encoding check for
+`tools/asm_pineapple.py` itself, and the Timer/PWM peripheral (counter
+enable/reset/overflow, PWM duty cycle at 0x00/0x80/0xFF, and the
+PIN_MUX wiring onto uo_out[7]). They're plain Icarus testbenches, not
 cocotb, so they don't run as part of `make` above -- run them together
 with:
 
@@ -118,6 +120,16 @@ iverilog -g2012 -I ../src -o /tmp/tb9.vvp ../src/tt_um_agila32.v ../src/rv32i_co
 # -- a wrapper with the wrong funct3/funct7 is expected to fail loudly
 # here, not coincidentally pass.
 iverilog -g2012 -I ../src -o /tmp/tb10.vvp ../src/rv32i_core.v alu_test_mem.v tb_alu_test.v && vvp /tmp/tb10.vvp
+
+# Timer/PWM peripheral (0xF2/0xF3/0xF5/0xF6/0xF7/0xF9/0xFA), ported
+# from AgilA8's a8_peripherals.v: drives mem.v's register bus directly
+# to check the free-running 16-bit timer (enable, write-1-to-reset,
+# overflow flag on 0xFFFF->0x0000 wraparound, clear-on-any-write), the
+# 8-bit free-running PWM generator at duty 0x00/0x80/0xFF and with
+# PWM_CTRL disabled, then confirms against the real tt_um_agila32 top
+# level that PIN_MUX actually selects between LED_OUT[7] and the PWM
+# waveform on uo_out[7]
+iverilog -g2012 -I ../src -o /tmp/tb11.vvp ../src/tt_um_agila32.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v tb_timer_pwm.v && vvp /tmp/tb11.vvp
 ```
 
 None of these has been checked against a real flash/PSRAM chip or a

@@ -68,10 +68,24 @@ smaller 256-byte address space:
   response everywhere else on this bus. This is also what the boot
   ROM's own self-test probes at power-on (see below).
 - `0xF0`: memory-mapped **LED output register**, wired to `uo_out`.
+- `0xF1`: memory-mapped **PSRAM_BANK register**, read/write, resets to
+  0. See "PSRAM_BANK (RAM B)" below.
+- `0xF2`/`0xF3`: memory-mapped **TIMER_LO/TIMER_HI**, read-only -- low/
+  high byte of a free-running 16-bit counter. See "Timer / PWM" below.
 - `0xF4`: memory-mapped **switch input register**, wired to `ui_in` --
   also the bootloader's DATA/CLOCK/START input, see below.
+- `0xF5`: memory-mapped **TIMER_CTRL register**, read/write, resets to
+  0. See "Timer / PWM" below.
+- `0xF6`: memory-mapped **TIMER_FLAG register**, read/write, resets to
+  0. See "Timer / PWM" below.
+- `0xF7`: memory-mapped **PWM_DUTY register**, read/write, resets to
+  0. See "Timer / PWM" below.
 - `0xF8`: memory-mapped **FLASH_MODE register**, write-only,
   write-any-value-to-set. See "Reprogrammability" below.
+- `0xF9`: memory-mapped **PWM_CTRL register**, read/write, resets to
+  0. See "Timer / PWM" below.
+- `0xFA`: memory-mapped **PIN_MUX register**, read/write, resets to 0.
+  See "Timer / PWM" below.
 - `0xFC`: memory-mapped **FLASH_PAGE register**, read/write, resets to
   0. See "Bank-switched flash execution" below.
 
@@ -195,10 +209,12 @@ exercises both.
 `tools/build_st7789_flash_image.py` assembles a small ST7789 LCD driver
 (SWRESET/SLPOUT/COLMOD/MADCTL/CASET/RASET/DISPON, then fills the
 configured window with a solid color) meant to be pre-programmed onto
-the external flash chip and reached via the handoff stub above. Since
-this core has no dedicated SPI peripheral (unlike a hardware CS2
-engine), the driver bit-bangs SPI over `GPIO_OUT` directly (`uo_out[0]`
-=SCK, `uo_out[1]`=MOSI, `uo_out[2]`=DC, `uo_out[3]`=CS, held low for the
+the external flash chip and reached via the handoff stub above. This
+core's CS2 hardware only speaks the fixed `0x03`/`0x02` PSRAM command
+protocol (see "PSRAM_BANK (RAM B)" below), not arbitrary SPI bytes, so
+it's still not a fit for a display's own command set -- the driver
+bit-bangs SPI over `GPIO_OUT` directly instead (`uo_out[0]`=SCK,
+`uo_out[1]`=MOSI, `uo_out[2]`=DC, `uo_out[3]`=CS, held low for the
 program's entire lifetime).
 
 This driver is built entirely on `PagedAsm` (above), not a flat
@@ -414,8 +430,87 @@ keyboard, nothing else on the chip needs to change.
 sets `FLASH_MODE`; the boot ROM itself never asserts it), `uio[1]`=SD0/
 MOSI, `uio[2]`=SD1/MISO, `uio[3]`=SCK, `uio[4:5]`=SD2/SD3 (held high,
 unused in single-line mode), `uio[6]`=CS1 (PSRAM "RAM A", backs the
-`0xE0-0xEF` window and the power-on self-test), `uio[7]`=unused. The
-QSPI Pmod must be physically attached for `0xE0-0xEF` accesses (and
+`0xE0-0xEF` window and the power-on self-test by default), `uio[7]`=CS2
+(PSRAM "RAM B", backs that SAME `0xE0-0xEF` window instead once a
+program writes `PSRAM_BANK` (`0xF1`) -- see "PSRAM_BANK (RAM B)" below).
+The QSPI Pmod must be physically attached for `0xE0-0xEF` accesses (and
 `FLASH_MODE` accesses of `0xB4-0xDF`) to behave -- everything else on
 this chip, including the bootloader over `ui_in`, works standalone with
 no external hardware at all.
+
+#### PSRAM_BANK (RAM B)
+
+The stock Tiny Tapeout QSPI Pmod board has a second, populated PSRAM
+chip ("RAM B") already wired directly to CS2 -- no board modification
+is needed to reach it, unlike AgilA8's CS2 (a generic-purpose SPI
+front-end that requires cutting a trace on the Pmod before it can talk
+to anything other than that same chip). RAM B speaks the exact same
+single-line `0x03` READ / `0x02` WRITE protocol as RAM A.
+
+Because this core's entire address space is only 256 bytes and already
+fully mapped, RAM B isn't a second, separate address window the way
+RAM A is -- there's no room left for one. Instead, `PSRAM_BANK` (`0xF1`,
+read/write, resets to `0`) picks which chip the *existing* `0xE0-0xEF`
+window is backed by:
+
+- `PSRAM_BANK = 0` (reset default): `0xE0-0xEF` reaches RAM A (CS1) --
+  identical to every revision before CS2 existed, including the boot
+  ROM's own self-test, which runs before any program has touched this
+  register and so always probes RAM A.
+- `PSRAM_BANK = 1`: `0xE0-0xEF` reaches RAM B (CS2) instead.
+
+Only one chip is reachable at a time through this window -- flip
+`PSRAM_BANK` back and forth to talk to each in turn. This is the same
+bank-switching idea `FLASH_MODE`/`FLASH_PAGE` already use for the flash
+window, applied to the second PSRAM chip instead of adding a dedicated
+window this address space has no room for.
+
+#### Timer / PWM
+
+Ported directly from AgilA8's `a8_peripherals.v` -- same bit layout
+and behavior, just remapped onto this core's single unified 8-bit
+address space instead of AgilA8's separate IMEM/DMEM split. Both
+peripherals are plain free-running counters with no interaction with
+the external-memory/`ready` machinery: they're read and written the
+same single-cycle way `FLASH_MODE`/`FLASH_PAGE`/`PSRAM_BANK` already
+are, so no wait states are ever introduced by touching them.
+
+**Timer** -- a free-running 16-bit up-counter:
+
+- `TIMER_LO`/`TIMER_HI` (`0xF2`/`0xF3`, read-only): low/high byte of
+  the counter.
+- `TIMER_CTRL` (`0xF5`, read/write, resets to `0`): bit 0 enables
+  counting (the counter holds at its current value while this bit is
+  0); bit 1 is write-1-to-reset -- writing it with bit 1 set zeroes
+  the counter that same cycle, independent of whatever bit 0 is set
+  to in the same write. Bits `[7:2]` are unused, read as 0.
+- `TIMER_FLAG` (`0xF6`, read/write, resets to `0`): bit 0 is the
+  overflow flag, set when the counter wraps `0xFFFF` -> `0x0000`.
+  Sticky until cleared -- any write to this address clears it,
+  regardless of the value written (matches AgilA8's TIMER_FLAG
+  exactly). Bits `[7:1]` are unused, read as 0.
+
+**PWM** -- an 8-bit free-running PWM generator, sharing the same
+free-running counter idea:
+
+- `PWM_DUTY` (`0xF7`, read/write, resets to `0`): 8-bit duty cycle out
+  of a free-running 256-cycle period. `0xFF` is special-cased as
+  always-on (rather than 255/256, matching AgilA8's PWM_DUTY).
+- `PWM_CTRL` (`0xF9`, read/write, resets to `0`): bit 0 enables the
+  waveform; while disabled the output is held low regardless of
+  `PWM_DUTY`. Bits `[7:1]` are unused, read as 0.
+
+**PIN_MUX** (`0xFA`, read/write, resets to `0`) selects what
+`uo_out[7]` actually shows, since this core (unlike AgilA8, which has
+a spare pin) has already committed all 8 `uo_out` bits to `LED_OUT`:
+
+- `PIN_MUX = 0` (reset default): `uo_out[7]` = `LED_OUT[7]` -- matches
+  every revision before the Timer/PWM peripheral existed, so a program
+  that never touches `PIN_MUX` sees exactly the old behavior,
+  including the boot ROM's own self-test-result bit.
+- `PIN_MUX = 1`: `uo_out[7]` = the PWM waveform instead.
+
+`uo_out[6:0]` always shows `LED_OUT[6:0]` regardless of `PIN_MUX` --
+only bit 7 is muxed. See `test/tb_timer_pwm.v` for a standalone
+testbench covering the counter, overflow flag, duty-cycle waveform,
+and `PIN_MUX` wiring end to end.

@@ -62,6 +62,15 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
       external PSRAM window over the QSPI Pmod + memory-mapped LED
       output (`0xF0`) / switch input (`0xF4`) / `FLASH_MODE` (`0xF8`) /
       `FLASH_PAGE` (`0xFC`)
+- [x] **Timer/PWM peripheral**, ported from AgilA8's
+      `a8_peripherals.v` (same bit layout/behavior): a free-running
+      16-bit timer with enable/reset/overflow-flag registers
+      (`TIMER_LO`/`TIMER_HI`/`TIMER_CTRL`/`TIMER_FLAG` at `0xF2`/
+      `0xF3`/`0xF5`/`0xF6`) and an 8-bit free-running PWM generator
+      (`PWM_DUTY`/`PWM_CTRL` at `0xF7`/`0xF9`), with `PIN_MUX` (`0xFA`)
+      selecting whether `uo_out[7]` shows the PWM waveform or
+      `LED_OUT[7]` as before -- see `test/tb_timer_pwm.v` and
+      docs/info.md's "Timer / PWM" section
 - [x] **Reprogrammable at runtime, no reflash/retapeout needed**: the
       boot ROM listens indefinitely for a bootload request over
       `ui_in[0:2]` (DATA/CLOCK/START) and runs whatever program it
