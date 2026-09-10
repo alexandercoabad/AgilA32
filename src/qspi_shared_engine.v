@@ -136,7 +136,25 @@ module qspi_shared_engine (
     // front-end has no cmd/addr phase at all, see ST_IDLE below, which
     // left-justifies the raw byte into sreg's top 8 bits directly
     // instead of calling this function.
-    function [63:0] build_preload;
+    // Declared `automatic` deliberately: Yosys's proc_dff pass turns a
+    // plain (non-automatic) function's locals into module-scope static
+    // regs, and calling such a function only on ONE side of a ternary
+    // inside a clocked non-blocking assignment (see ST_IDLE's `sreg <=
+    // (req_dev==2'd0) ? ... : build_preload(...)` below, added by the
+    // generic-SPI-peripheral change) makes it ambiguous, per call site,
+    // whether that static storage should behave as a register or as
+    // plain combinational logic -- Yosys reports this as "Multiple edge
+    // sensitive events found for this signal" on the function's `addr`
+    // input specifically (reproduced with `yosys -p "... proc"` against
+    // this file). `automatic` gives the function's locals per-call
+    // (stack-like) storage instead of shared static storage, which
+    // removes the ambiguity Yosys was tripping on. half_period_for()
+    // below doesn't need this -- it's always called unconditionally (no
+    // ternary), never from a branch, which apparently sidesteps the
+    // issue -- but it's marked `automatic` too for consistency, so neither
+    // function's synthesizability depends on how/where it happens to be
+    // called from in the future.
+    function automatic [63:0] build_preload;
         input        we;
         input [1:0]  size;
         input [23:0] addr;
@@ -165,7 +183,7 @@ module qspi_shared_engine (
     // uses (see that module's qspi_shared_engine.v) -- full SCK period
     // is 2x this, so 1/4/16/64 here means SCK = clk/2, clk/8, clk/32,
     // clk/128, exactly the four settings named in the porting roadmap.
-    function [7:0] half_period_for;
+    function automatic [7:0] half_period_for;
         input [1:0] sel;
         begin
             case (sel)
@@ -209,6 +227,19 @@ module qspi_shared_engine (
                                     // by then causes an immediate spurious
                                     // re-trigger with stale address/data.
                                     // Caught by test/tb_mem_ext.v.
+
+    // Computed unconditionally, combinationally, every cycle -- calling
+    // build_preload() itself must never be conditional (e.g. inside a
+    // ternary feeding a non-blocking assignment), even after marking it
+    // `automatic` above: Yosys's proc_dff pass still errors identically
+    // ("Multiple edge sensitive events found for this signal" on the
+    // function's own `addr` local), reproduced and confirmed with
+    // `yosys -p "... proc"` even with `automatic` in place. Only the
+    // SELECTION between this wire and the generic-SPI raw byte may be
+    // conditional (see ST_IDLE below) -- exactly mirroring how
+    // half_period_for() already gets called unconditionally every
+    // ST_IDLE pass and has never hit this error.
+    wire [63:0] preload_value = build_preload(req_we, req_size, req_addr, req_wdata);
 
     reg [2:0] state;
 
@@ -263,7 +294,7 @@ module qspi_shared_engine (
                         // out, whatever ends up in the rest of sreg is
                         // don't-care.
                         sreg  <= (req_dev == 2'd0) ? {req_wdata[7:0], 56'h0}
-                                                    : build_preload(req_we, req_size, req_addr, req_wdata);
+                                                    : preload_value;
                         half_period_r <= half_period_for(req_div_sel);
                         div_cnt       <= 8'd0;
                         state <= ST_SHIFT_LO;

@@ -636,6 +636,25 @@ module mem #(
     // ---------------------------------------------------------------
     // Write path (synchronous)
     // ---------------------------------------------------------------
+    // spi_last_rx used to be updated by a second, sibling top-level
+    // `if (rst_n && ext_ready && in_spi_write) ...` statement placed
+    // AFTER this block's main `if (!rst_n) ... else if (we) ...`
+    // chain, rather than nested inside it. That's valid Verilog and
+    // simulates correctly (confirmed against the standalone
+    // testbenches before this fix), but it made this whole process
+    // unsynthesizable: Yosys's proc_dff pass errored with "Multiple
+    // edge sensitive events found for this signal", reported against
+    // `gpio_out` specifically (the first signal driven in this
+    // process, in source order) even though the actual structural
+    // ambiguity came from spi_last_rx's second, disconnected top-level
+    // `if`. Reproduced and confirmed fixed with
+    // `yosys -p "read_verilog -sv mem.v; hierarchy -top mem; proc"`.
+    // Nesting spi_last_rx's update inside the SAME `else` branch as
+    // everything else (as a sibling `if`, not a second top-level one)
+    // gives Yosys a single unified sync tree for the whole process,
+    // which resolves it -- and also means `rst_n &&` in the guard is
+    // now redundant (the `else` branch already only runs when
+    // rst_n==1) and has been dropped.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             gpio_out   <= 8'h00;
@@ -646,57 +665,59 @@ module mem #(
             qspi_div_sel <= 2'd3; // reset default = slowest (sys_clk/128),
                                    // matches AgilA8's own reset-safe default
             spi_last_rx  <= 8'h00;
-        end else if (we) begin
-            if (in_ram_range && !in_ext_flash) begin
-                case (size)
-                    2'd0: begin // SB -- always fits in one word, no crossing possible
-                        ram_words[ram_widx0][(ram_byte_off * 8) +: 8] <= wdata[7:0];
-                    end
-                    2'd1: begin // SH -- may straddle a word boundary
-                        if (ram_byte_off == 2'd3) begin
-                            ram_words[ram_widx0][31:24] <= wdata[7:0];
-                            ram_words[ram_widx1][7:0]   <= wdata[15:8];
-                        end else begin
-                            ram_words[ram_widx0][(ram_byte_off * 8) +: 16] <= wdata[15:0];
+        end else begin
+            if (we) begin
+                if (in_ram_range && !in_ext_flash) begin
+                    case (size)
+                        2'd0: begin // SB -- always fits in one word, no crossing possible
+                            ram_words[ram_widx0][(ram_byte_off * 8) +: 8] <= wdata[7:0];
                         end
-                    end
-                    default: begin // SW -- documented to be 4-byte aligned
-                        ram_words[ram_widx0] <= wdata;
-                    end
-                endcase
-            end else if (addr == 8'hF0) begin
-                gpio_out <= wdata[7:0];
-            end else if (addr == 8'hF1) begin
-                psram_bank <= wdata[0];   // 0=RAM A(CS1) 1=RAM B(CS2)
-            end else if (addr == 8'hF8) begin
-                flash_mode <= 1'b1;   // write-any-value-to-set, sticky until reset
-            end else if (addr == 8'hFB) begin
-                qspi_div_sel <= wdata[1:0];
-            end else if (addr == 8'hFC) begin
-                flash_page <= wdata[7:0];   // the written value IS the new page, unlike FLASH_MODE
+                        2'd1: begin // SH -- may straddle a word boundary
+                            if (ram_byte_off == 2'd3) begin
+                                ram_words[ram_widx0][31:24] <= wdata[7:0];
+                                ram_words[ram_widx1][7:0]   <= wdata[15:8];
+                            end else begin
+                                ram_words[ram_widx0][(ram_byte_off * 8) +: 16] <= wdata[15:0];
+                            end
+                        end
+                        default: begin // SW -- documented to be 4-byte aligned
+                            ram_words[ram_widx0] <= wdata;
+                        end
+                    endcase
+                end else if (addr == 8'hF0) begin
+                    gpio_out <= wdata[7:0];
+                end else if (addr == 8'hF1) begin
+                    psram_bank <= wdata[0];   // 0=RAM A(CS1) 1=RAM B(CS2)
+                end else if (addr == 8'hF8) begin
+                    flash_mode <= 1'b1;   // write-any-value-to-set, sticky until reset
+                end else if (addr == 8'hFB) begin
+                    qspi_div_sel <= wdata[1:0];
+                end else if (addr == 8'hFC) begin
+                    flash_page <= wdata[7:0];   // the written value IS the new page, unlike FLASH_MODE
+                end
+                // 0xFD (SPI_DATA) is deliberately NOT handled in this
+                // if/else-if chain -- unlike every other register here,
+                // a SPI_DATA write doesn't complete this same cycle; it
+                // goes through in_spi_write/qspi_shared_engine instead
+                // (see the instantiation above) and takes multiple cycles,
+                // same as any other external transaction. See spi_last_rx's
+                // latch just below.
             end
-            // 0xFD (SPI_DATA) is deliberately NOT handled in this
-            // if/else-if chain -- unlike every other register here,
-            // a SPI_DATA write doesn't complete this same cycle; it
-            // goes through in_spi_write/qspi_shared_engine instead
-            // (see the instantiation above) and takes multiple cycles,
-            // same as any other external transaction. See spi_last_rx's
-            // latch just below.
-        end
 
-        // spi_last_rx: latched independently of the `we`-gated chain
-        // above (and NOT reset-gated -- rst_n already covers it in the
-        // branch above) because it fires on ext_ready, which pulses
-        // several cycles AFTER the store that requested it, not on the
-        // same edge `we` was sampled. `in_spi_write` is still correctly
-        // asserted on that later cycle -- addr/we/valid are all held
-        // constant by the core's own wait-state protocol (see
-        // rv32i_core.v's ST_MEM_WAIT) for the whole transaction, only
-        // clearing the SAME cycle `ready` (here, `ext_ready`) pulses,
-        // not before -- see qspi_shared_engine.v's ST_POST comment for
-        // the matching reasoning on the engine's own side of this race.
-        if (rst_n && ext_ready && in_spi_write)
-            spi_last_rx <= ext_rdata[7:0];
+            // spi_last_rx: updated independently of the `we`-gated chain
+            // above, because it fires on ext_ready, which pulses several
+            // cycles AFTER the store that requested it, not on the same
+            // edge `we` was sampled. `in_spi_write` is still correctly
+            // asserted on that later cycle -- addr/we/valid are all held
+            // constant by the core's own wait-state protocol (see
+            // rv32i_core.v's ST_MEM_WAIT) for the whole transaction, only
+            // clearing the SAME cycle `ready` (here, `ext_ready`) pulses,
+            // not before -- see qspi_shared_engine.v's ST_POST comment
+            // for the matching reasoning on the engine's own side of
+            // this race.
+            if (ext_ready && in_spi_write)
+                spi_last_rx <= ext_rdata[7:0];
+        end
     end
 
 endmodule
