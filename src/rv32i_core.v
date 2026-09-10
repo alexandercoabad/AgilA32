@@ -204,11 +204,16 @@ module rv32i_core (
                 `ST_EXEC: begin
                     if (is_ebreak) begin
                         mem_we    <= 1'b0;
+                        mem_valid <= 1 me_or_0(1'b0);
                         mem_valid <= 1'b0;
                         state     <= `ST_HALTED;
                     end else begin
                         alu_result <= alu_y;
-                        state      <= `ST_MEM;
+                        if (opcode == `OP_LOAD || opcode == `OP_STORE) begin
+                            state <= `ST_MEM;
+                        end else begin
+                            state <= `ST_WB;
+                        end
                     end
                 end
 
