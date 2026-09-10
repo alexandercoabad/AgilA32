@@ -34,11 +34,11 @@ module rv32i_core (
     initial for (i = 1; i <= 31; i = i + 1) regs[i] = 32'h0;
 `endif
 
-    wire [4:0] rd    = ir[11:7];
-    wire [4:0] rs1   = ir[19:15];
-    wire [4:0] rs2   = ir[24:20];
+    wire [4:0] rd     = ir[11:7];
+    wire [4:0] rs1    = ir[19:15];
+    wire [4:0] rs2    = ir[24:20];
     wire [2:0] funct3 = ir[14:12];
-    wire funct7_b5 = ir[30];
+    wire funct7_b5    = ir[30];
     wire [6:0] opcode = ir[6:0];
 
     wire is_ebreak = (opcode == `OP_SYSTEM) && (funct3 == 3'b000) &&
@@ -55,8 +55,8 @@ module rv32i_core (
     wire [31:0] imm_i = {{20{ir[31]}}, ir[31:20]};
     wire [31:0] imm_s = {{20{ir[31]}}, ir[31:25], ir[11:7]};
     wire [31:0] imm_u = {ir[31:12], 12'b0};
-    wire [7:0] imm_b = {ir[27], ir[26], ir[25], ir[11], ir[10], ir[9], ir[8], 1'b0};
-    wire [7:0] imm_j = {ir[27], ir[26], ir[25], ir[24], ir[23], ir[22], ir[21], 1'b0};
+    wire [7:0]  imm_b = {ir[27], ir[26], ir[25], ir[11], ir[10], ir[9], ir[8], 1'b0};
+    wire [7:0]  imm_j = {ir[27], ir[26], ir[25], ir[24], ir[23], ir[22], ir[21], 1'b0};
 
     // ------------------------------------------------------------
     // ALU
@@ -251,7 +251,8 @@ module rv32i_core (
                 end
 
                 `ST_WB: begin
-                    mem_we <= 1'b0;
+                    mem_we    <= 1'b0;
+                    mem_valid <= 1'b0;
                     if (rd != 5'd0) begin
                         case (opcode)
                             `OP_LUI:   regs[rd] <= imm_u;
@@ -260,11 +261,11 @@ module rv32i_core (
                             `OP_JALR:  regs[rd] <= {24'b0, pc} + 32'd4;
                             `OP_LOAD: begin
                                 case (funct3)
-                                    3'b000: regs[rd] <= {{24{load_data[7]}},  load_data[7:0]};   // LB
-                                    3'b001: regs[rd] <= {{16{load_data[15]}}, load_data[15:0]};  // LH
-                                    3'b010: regs[rd] <= load_data;                               // LW
-                                    3'b100: regs[rd] <= {24'b0, load_data[7:0]};                  // LBU
-                                    3'b101: regs[rd] <= {16'b0, load_data[15:0]};                 // LHU
+                                    3'b000: regs[rd] <= {{24{load_data[7]}},  load_data[7:0]};
+                                    3'b001: regs[rd] <= {{16{load_data[15]}}, load_data[15:0]};
+                                    3'b010: regs[rd] <= load_data;
+                                    3'b100: regs[rd] <= {24'b0, load_data[7:0]};
+                                    3'b101: regs[rd] <= {16'b0, load_data[15:0]};
                                     default: regs[rd] <= load_data;
                                 endcase
                             end
