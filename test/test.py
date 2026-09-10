@@ -131,14 +131,30 @@ def speed_up_qspi(dut):
     Gate-level netlists (this same test.py also runs under GATES=yes
     against a synthesized, normally-flattened netlist -- see
     .github/workflows/gds.yaml's gl_test job) don't preserve the
-    `user_project.u_mem` hierarchy this force relies on, so this is
-    wrapped rather than left to throw AttributeError and take the
-    whole GL run down with it. RTL sim (what this fix targets) always
-    has the hierarchy, so the force always actually happens there;
-    under GATES=yes it's a silent no-op, and GL runs fall back to
-    running at QSPI_CTRL's real slow reset-default speed -- which
-    means GL's own cycle budgets need to be wide enough to tolerate
-    that (not yet verified here -- flagged as a follow-up).
+    `user_project.u_mem` hierarchy this force relies on as a walkable
+    Python scope -- confirmed against a real gate-level run: the
+    flattened netlist still contains the register (as literal escaped
+    wire names `u_mem.qspi_div_sel[1]`/`[0]` directly inside
+    `user_project`'s scope, visible in that run's waveform dump), but
+    `dut.user_project.u_mem` isn't a nested scope to attribute-access
+    into anymore, so the force raises AttributeError and this
+    try/except turns it into a silent no-op. Poking the flattened
+    wire name directly was considered and rejected: it depends on
+    synthesis happening not to rename or optimize away that specific
+    register, which isn't a safe assumption to build on across
+    synthesis runs.
+
+    So under GATES=yes this is a no-op, and GL runs genuinely execute
+    at QSPI_CTRL's real, slow reset-default speed -- every cycle
+    budget in this file (wait_for_first_led_write's default and every
+    test that waits before or without it) is now sized to tolerate
+    that directly, the same fix CHANGES_feature3.md already applied to
+    the standalone Icarus testbenches, rather than depending on this
+    force succeeding for correctness. RTL sim still benefits from the
+    force where it works (self-test finishes in a few hundred cycles
+    instead of ~10,340, so RTL runs finish faster within the same,
+    now-larger budgets) -- it's a speed optimization there, not a
+    correctness dependency anywhere anymore.
     """
     try:
         dut.user_project.u_mem.qspi_div_sel.value = 0
@@ -146,8 +162,18 @@ def speed_up_qspi(dut):
         pass
 
 
-async def wait_for_first_led_write(dut, max_cycles=2000):
-    """Waits for the self-test execution to complete and write to uo_out."""
+async def wait_for_first_led_write(dut, max_cycles=15000):
+    """Waits for the self-test execution to complete and write to uo_out.
+
+    max_cycles' default of 15000 is sized for the case speed_up_qspi's
+    own docstring flags as unverified: gate-level runs (GATES=yes)
+    where the hierarchical force silently no-ops, leaving QSPI_CTRL at
+    its real ~64x-slower reset default and pushing self-test out to
+    ~10,340 cycles (same figure CHANGES_feature3.md measured for
+    tb_check.v against the identical RTL) -- not the few hundred
+    cycles self-test takes when the force actually lands under RTL
+    sim. 15000 matches the margin already proven sufficient there.
+    """
     for _ in range(max_cycles):
         await ClockCycles(dut.clk, 1)
         val = safe_int(dut.uo_out.value)
@@ -203,7 +229,7 @@ async def test_counter_wraps(dut):
     seen_values = {last}
     wrapped = False
 
-    for _ in range(500 + 56 * 20):
+    for _ in range(15000 + 56 * 20):
         await ClockCycles(dut.clk, 1)
         cur = safe_int(dut.uo_out.value) & 0x0F
         if cur != last:
@@ -250,7 +276,7 @@ async def test_ui_in_upper_bits_do_not_affect_counter(dut):
     seen_values = {last}
     wrapped = False
 
-    for i in range(500 + 56 * 20):
+    for i in range(15000 + 56 * 20):
         dut.ui_in.value = (i & 0x1F) << 3  # only touch bits [7:3]
         await ClockCycles(dut.clk, 1)
         cur = safe_int(dut.uo_out.value) & 0x0F
@@ -454,7 +480,21 @@ async def test_bootloader_loads_and_runs_program(dut):
     dut.rst_n.value = 1
     speed_up_qspi(dut)
 
-    await ClockCycles(dut.clk, 200)
+    # 15000 cycles (not the original 200) to clear self-test's real,
+    # slow-QSPI_CTRL-default duration (~10,340 cycles -- see
+    # wait_for_first_led_write) before asserting START. Asserting it
+    # any earlier starts the bit-banged transfer before the boot ROM
+    # has reached MAIN_LOOP's polling loop, desyncing the whole
+    # protocol -- confirmed as the actual gate-level failure mode
+    # (self-test hadn't finished, so the length/program bytes were
+    # sampled against nothing, corrupting the load). This is well
+    # under MAIN_LOOP's own ~32,256-cycle give-up timeout (measured
+    # from when MAIN_LOOP itself starts, i.e. self-test's ~10,340 plus
+    # the shift's own budget), so it's asserted while the boot ROM is
+    # still genuinely listening, and once START is recognized MAIN_LOOP
+    # is left for good -- the timeout can't fire mid-transfer no matter
+    # how long the bit-banging afterward takes.
+    await ClockCycles(dut.clk, 15000)
 
     program = bytes([
         0x93, 0x00, 0x50, 0x00,  # addi x1, x0, 5
